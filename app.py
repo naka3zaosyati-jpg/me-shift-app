@@ -245,6 +245,12 @@ COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
 def page_home():
     st.markdown('<div class="card"><h2>① ホーム（月間勤務表・シフト）</h2><p>確定した勤務表や術式予定を確認・編集します。</p></div>', unsafe_allow_html=True)
     
+    df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
+    if not df_staff.empty:
+        df_staff = df_staff[df_staff["氏名"].astype(str).str.strip() != ""]
+        df_staff = df_staff[~df_staff["氏名"].astype(str).str.lower().isin(["none", "nan"])]
+    staff_list = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
+    
     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
     df_ope = fetch_data("術式予定", COLS_OPE_SCHEDULE)
     
@@ -264,9 +270,19 @@ def page_home():
         for _, row in df_shift.iterrows():
             d_key = parse_date(row["日時"])
             if d_key:
-                staff_info = f"{row['氏名']} ({row['割り当て業務']})"
+                staff_name = str(row['氏名']).strip()
+                staff_info = f"{staff_name} ({row['割り当て業務']})"
                 if d_key not in shift_dict: shift_dict[d_key] = []
-                shift_dict[d_key].append(staff_info)
+                shift_dict[d_key].append((staff_name, staff_info))
+                
+    # カレンダーの表示順を staff_list の順番に合わせる
+    def get_staff_idx(name):
+        try: return staff_list.index(name)
+        except ValueError: return 999
+        
+    for k in shift_dict:
+        shift_dict[k].sort(key=lambda x: get_staff_idx(x[0]))
+        shift_dict[k] = [x[1] for x in shift_dict[k]] # 名前を除いて表示用文字列のみにする
 
     ope_dict = {}
     if not df_ope.empty:
@@ -352,13 +368,6 @@ def page_home():
     with tab_shift:
         st.write(f"### 📋 {selected_year}年{selected_month}月 横型シフト表")
         st.info("💡 表の中のセルをクリックすると、**プルダウン形式**で割り当て業務を直接変更できます。修正後は必ず下の「編集内容を保存」ボタンを押してください。")
-        
-        df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
-        if not df_staff.empty:
-            # 空白や None, NaN のスタッフを除外（None表示バグ対策）
-            df_staff = df_staff[df_staff["氏名"].astype(str).str.strip() != ""]
-            df_staff = df_staff[~df_staff["氏名"].astype(str).str.lower().isin(["none", "nan"])]
-        staff_list = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
         
         _, num_days = calendar.monthrange(selected_year, selected_month)
         
@@ -732,7 +741,10 @@ def page_shift_creation():
                                 
                 _, num_days = calendar.monthrange(target_year, target_month)
                 draft_data = []
+                
                 staff_task_counts = {s: {} for s in staff_list}
+                this_month_holiday_counts = {s: 0 for s in staff_list}
+                staff_last_night_shift = {}
                 
                 df_history = fetch_data("確定勤務表", COLS_SHIFT)
                 if not df_history.empty:
@@ -741,11 +753,23 @@ def page_shift_creation():
                     for _, row in df_history.iterrows():
                         if pd.isna(row["_date_str"]) or not row["_date_str"]: continue
                         h_date = pd.to_datetime(row["_date_str"])
+                        s_name = str(row["氏名"]).strip()
+                        t_name = str(row["割り当て業務"]).strip()
+                        
+                        # 過去の割り当て回数をカウント（今月分は洗い替えるため除外）
                         if h_date.year < target_year or (h_date.year == target_year and h_date.month < target_month):
-                            s_name = str(row["氏名"]).strip()
-                            t_name = str(row["割り当て業務"]).strip()
                             if s_name in staff_task_counts:
                                 staff_task_counts[s_name][t_name] = staff_task_counts[s_name].get(t_name, 0) + 1
+                                
+                        # 全期間のデータから最新の宿直日（日勤含む）を取得
+                        if t_name in ["宿直", "日勤"]:
+                            abs_day = (h_date.date() - datetime.date(2020, 1, 1)).days
+                            if s_name not in staff_last_night_shift or abs_day > staff_last_night_shift[s_name]:
+                                staff_last_night_shift[s_name] = abs_day
+
+                def can_do_night_shift(staff, current_abs_day, required_interval=6):
+                    last_day = staff_last_night_shift.get(staff, -999)
+                    return (current_abs_day - last_day) >= required_interval
                                 
                 def get_count(staff, task): return staff_task_counts.get(staff, {}).get(task, 0)
                 def increment_count(staff, task):
@@ -757,6 +781,7 @@ def page_shift_creation():
                 for d in range(1, num_days + 1):
                     dt = datetime.date(target_year, target_month, d)
                     d_str = dt.strftime("%Y-%m-%d")
+                    current_abs_day = (dt - datetime.date(2020, 1, 1)).days
                     
                     is_weekend = dt.weekday() >= 5
                     is_holiday = jpholiday.is_holiday(dt)
@@ -802,18 +827,35 @@ def page_shift_creation():
                         if available_staff:
                             candidates_for_task = available_staff.copy()
                             
-                            # 休日（is_off_day）の「日勤」を決める場合、宿直希望者(△)を最優先する
+                            # 休日（is_off_day）の「日勤」を決める場合
                             if is_off_day and task == "日勤":
+                                # 宿直ルールを満たす者のみに絞る（6日間隔）
+                                valid_candidates = [s for s in candidates_for_task if can_do_night_shift(s, current_abs_day, 6)]
+                                if not valid_candidates:
+                                    # いなければ連続不可（2日間隔）まで緩和
+                                    valid_candidates = [s for s in candidates_for_task if can_do_night_shift(s, current_abs_day, 2)]
+                                if valid_candidates:
+                                    candidates_for_task = valid_candidates
+                                    
+                                # 宿直希望者(△)がいれば最優先
                                 wishers = [s for s in req_night_shift.get(d_str, []) if s in candidates_for_task]
                                 if wishers:
                                     candidates_for_task = wishers
-                                    
-                            random.shuffle(candidates_for_task)
-                            candidates_for_task.sort(key=lambda s: get_count(s, task))
+                                else:
+                                    # 希望がいなければ、「今月の休日出勤回数（1人1回徹底）」と「これまでの総回数」でソート
+                                    candidates_for_task.sort(key=lambda s: (this_month_holiday_counts.get(s, 0), get_count(s, task)))
+                            else:
+                                candidates_for_task.sort(key=lambda s: get_count(s, task))
+                                
                             assigned_staff = candidates_for_task[0]
                             
                             increment_count(assigned_staff, task)
                             available_staff.remove(assigned_staff)
+                            
+                            if is_off_day and task == "日勤":
+                                this_month_holiday_counts[assigned_staff] += 1
+                                staff_last_night_shift[assigned_staff] = current_abs_day
+                                
                             if task == "Ｄ": d_task_assigned = True
                         else:
                             assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
@@ -826,31 +868,38 @@ def page_shift_creation():
                     # 3. 宿直
                     # 今日の全候補者（日勤割り当て済み＋余っている人）から非常勤を除外して取得
                     night_candidates_all = [s for s in (assigned_today_staffs + available_staff) if s in staff_list and s not in part_time_staff]
-                    # 重複排除
-                    night_candidates_all = list(dict.fromkeys(night_candidates_all))
+                    night_candidates_all = list(dict.fromkeys(night_candidates_all)) # 重複排除
                     
+                    # 宿直ルール（6日間隔）を満たす者をフィルタ
+                    valid_night_candidates = [s for s in night_candidates_all if can_do_night_shift(s, current_abs_day, 6)]
+                    if not valid_night_candidates:
+                        valid_night_candidates = [s for s in night_candidates_all if can_do_night_shift(s, current_abs_day, 2)]
+                    if not valid_night_candidates:
+                        valid_night_candidates = night_candidates_all # 最終フォールバック
+                        
                     night_staff = None
-                    night_wishers = [s for s in req_night_shift.get(d_str, []) if s in night_candidates_all]
+                    night_wishers = [s for s in req_night_shift.get(d_str, []) if s in valid_night_candidates]
                     
                     # ① 宿直希望者がいれば最優先
                     if night_wishers:
                         night_staff = night_wishers[0]
                     else:
                         # ② いなければ、今日の日勤業務（通常業務）を割り当てられた人の中から選出
-                        real_assigned = [s for s in assigned_today_staffs if s in staff_list and s not in part_time_staff]
+                        real_assigned = [s for s in assigned_today_staffs if s in valid_night_candidates]
                         if real_assigned:
                             random.shuffle(real_assigned)
                             real_assigned.sort(key=lambda s: get_count(s, "宿直"))
                             night_staff = real_assigned[0]
-                        elif night_candidates_all:
+                        elif valid_night_candidates:
                             # 万が一、誰も日勤にいない場合は全候補から
-                            random.shuffle(night_candidates_all)
-                            night_candidates_all.sort(key=lambda s: get_count(s, "宿直"))
-                            night_staff = night_candidates_all[0]
+                            random.shuffle(valid_night_candidates)
+                            valid_night_candidates.sort(key=lambda s: get_count(s, "宿直"))
+                            night_staff = valid_night_candidates[0]
                             
                     if night_staff:
                         increment_count(night_staff, "宿直")
                         draft_data.append([d_str, night_staff, "宿直"])
+                        staff_last_night_shift[night_staff] = current_abs_day
                         
                     # 4. 余剰スタッフの割り当て（「フリー」枠）
                     # 平日のみ、どの業務にも割り当てられなかったスタッフをフリーとする
