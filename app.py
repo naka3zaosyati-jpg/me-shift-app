@@ -5,6 +5,8 @@ from google.oauth2.service_account import Credentials
 import datetime
 import calendar
 import io
+import jpholiday
+import random
 
 # --- 初期設定 ---
 st.set_page_config(
@@ -174,6 +176,32 @@ def append_data(sheet_name, row_data):
         st.error(f"シート「{sheet_name}」への書き込みでエラーが発生しました。\n詳細: {e}")
         return False
 
+def append_rows_batch(sheet_name, rows_data):
+    """
+    スプレッドシートへの複数行の一括書き込みを実行する。（ドラフト作成用）
+    """
+    client, _ = get_gspread_client()
+    if not client:
+        st.error(f"DB未接続のため、シート「{sheet_name}」への一括書き込みができません。")
+        return False
+        
+    try:
+        sheet_id = st.secrets.get("spreadsheet_id", "")
+        spreadsheet = client.open_by_key(sheet_id)
+        sheet = spreadsheet.worksheet(sheet_name)
+        
+        res = sheet.append_rows(
+            rows_data, 
+            value_input_option="USER_ENTERED",
+            insert_data_option="INSERT_ROWS",
+            table_range="A1"
+        )
+        st.cache_data.clear()
+        return res
+    except Exception as e:
+        st.error(f"シート「{sheet_name}」への一括書き込みでエラーが発生しました。\n詳細: {e}")
+        return False
+
 def update_data(sheet_name, search_col_index, search_value, row_data):
     """
     指定した列(search_col_index: 1始まり)から search_value を検索し、
@@ -272,7 +300,7 @@ def page_home():
                 ope_dict[d_key].append(ope_info)
                 
     # ----------------------------------------------------
-    # CSS (カレンダー用グリッドデザイン)
+    # CSS (カレンダー用グリッドデザイン・休日対応版)
     # ----------------------------------------------------
     calendar_css = """
     <style>
@@ -307,10 +335,20 @@ def page_home():
             box-shadow: 0 4px 8px rgba(0,0,0,0.05);
             z-index: 10;
         }
-        .calendar-day.other-month {
-            background-color: #F8F9FA;
-            opacity: 0.5;
+        /* 土曜日の背景（淡い青） */
+        .calendar-day.saturday {
+            background-color: #F0F8FF;
         }
+        /* 日曜・祝日の背景（淡い赤） */
+        .calendar-day.holiday {
+            background-color: #FFF0F5;
+        }
+        /* その他の月 */
+        .calendar-day.other-month {
+            opacity: 0.5;
+            background-color: #F8F9FA;
+        }
+        
         .day-number {
             font-size: 1.3rem;
             font-weight: 800;
@@ -318,6 +356,10 @@ def page_home():
             text-align: left;
             margin-bottom: 0px;
         }
+        /* 土曜・休日の日付色上書き */
+        .calendar-day.saturday .day-number { color: #0D6EFD; }
+        .calendar-day.holiday .day-number { color: #DC3545; }
+        
         .day-weekday {
             font-size: 0.75rem;
             color: #6C757D;
@@ -364,15 +406,27 @@ def page_home():
     for week in month_days:
         for d in week:
             is_other_month = d.month != selected_month
-            class_name = "calendar-day other-month" if is_other_month else "calendar-day"
+            is_saturday = d.weekday() == 5
+            is_sunday = d.weekday() == 6
+            is_holiday = jpholiday.is_holiday(d)
+            
+            class_name = "calendar-day"
+            if is_other_month:
+                class_name += " other-month"
+            elif is_holiday or is_sunday:
+                class_name += " holiday"
+            elif is_saturday:
+                class_name += " saturday"
             
             d_str = d.strftime("%Y-%m-%d")
             day_num = d.day
-            weekday_str = ["月", "火", "水", "木", "金", "土", "日"][d.weekday()]
             
-            day_color_style = ""
-            if d.weekday() == 6: day_color_style = "color: #DC3545;"
-            elif d.weekday() == 5: day_color_style = "color: #0D6EFD;"
+            # 曜日テキストと祝日名の取得
+            weekday_list = ["月", "火", "水", "木", "金", "土", "日"]
+            holiday_name = jpholiday.is_holiday_name(d)
+            weekday_str = f"{weekday_list[d.weekday()]}曜日"
+            if holiday_name:
+                weekday_str += f" <span style='color:#DC3545;'>({holiday_name})</span>"
                 
             staffs = shift_dict.get(d_str, [])
             opes = ope_dict.get(d_str, [])
@@ -381,8 +435,8 @@ def page_home():
             ope_html = "<br>".join(opes) if opes else ""
             
             html += f'<div class="{class_name}">'
-            html += f'<div class="day-number" style="{day_color_style}">{day_num}</div>'
-            html += f'<div class="day-weekday">{weekday_str}曜日</div>'
+            html += f'<div class="day-number">{day_num}</div>'
+            html += f'<div class="day-weekday">{weekday_str}</div>'
             html += f'<div class="day-staff">{staff_html}</div>'
             if ope_html:
                 html += f'<div class="day-ope">{ope_html}</div>'
@@ -429,6 +483,16 @@ def page_home():
                                 day_str = f"{dt.day}日"
                                 curr_val = shift_matrix.at[staff_name, day_str]
                                 # 同じ日に複数業務がある場合は改行して追記
+                                if curr_val:
+                                    shift_matrix.at[staff_name, day_str] = curr_val + "\n" + duty
+                                else:
+                                    shift_matrix.at[staff_name, day_str] = duty
+                            # ダミースタッフ等マスタに無いものは末尾に追記
+                            elif staff_name.startswith("スタッフ"):
+                                if staff_name not in shift_matrix.index:
+                                    shift_matrix.loc[staff_name] = ""
+                                day_str = f"{dt.day}日"
+                                curr_val = shift_matrix.at[staff_name, day_str]
                                 if curr_val:
                                     shift_matrix.at[staff_name, day_str] = curr_val + "\n" + duty
                                 else:
@@ -498,9 +562,9 @@ def page_home():
 
 
 def page_schedule_task():
-    st.markdown('<div class="card"><h2>② 予定・各種マスタ管理</h2><p>術式予定、希望入力の追加、および各マスタの管理（追加・更新）を行います。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h2>② 予定・マスタ・自動ドラフト管理</h2><p>術式予定、希望休入力、各種マスタの管理、およびシフト自動生成を行います。</p></div>', unsafe_allow_html=True)
     
-    tab1, tab2, tab3, tab4 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理", "術式マスタ管理"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理", "術式マスタ管理", "✨ 自動シフト作成"])
     
     with tab1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -632,6 +696,100 @@ def page_schedule_task():
         st.dataframe(fetch_data("術式マスタ", COLS_OPE_MASTER), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
+    with tab5:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.write("### ✨ シフト自動割り当て（ドラフト作成）")
+        st.info("※実行すると、ルールと希望休に基づき業務を自動で割り当て、確定勤務表へ追記します。\n既に同月のデータがある場合は二重登録されるため、必要に応じてスプレッドシート上の古いデータを削除してから実行してください。")
+        
+        with st.form("auto_shift_form"):
+            col1, col2 = st.columns(2)
+            today = datetime.date.today()
+            with col1:
+                target_year = st.number_input("対象年", min_value=2020, max_value=2050, value=today.year, step=1)
+            with col2:
+                target_month = st.number_input("対象月", min_value=1, max_value=12, value=today.month, step=1)
+                
+            if st.form_submit_button("シフトドラフトを生成して書き込む"):
+                with st.spinner("ドラフトを作成中..."):
+                    df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
+                    df_request = fetch_data("希望入力", COLS_REQUEST)
+                    df_task = fetch_data("業務マスタ", COLS_TASK_MASTER)
+                    
+                    staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
+                    task_abbrs = df_task["略語"].tolist() if not df_task.empty else []
+                    
+                    # 希望休の抽出（日をキーにした×スタッフのリストを作成）
+                    req_dict = {}
+                    if not df_request.empty:
+                        for _, row in df_request.iterrows():
+                            # 区分が '×' を含むもの（不可）を抽出
+                            if "×" in str(row["区分"]):
+                                r_date = parse_date(row["日時"])
+                                if r_date:
+                                    if r_date not in req_dict:
+                                        req_dict[r_date] = []
+                                    req_dict[r_date].append(str(row["氏名"]))
+                                    
+                    _, num_days = calendar.monthrange(target_year, target_month)
+                    draft_data = []
+                    
+                    # 1日から月末までループ処理
+                    for d in range(1, num_days + 1):
+                        dt = datetime.date(target_year, target_month, d)
+                        d_str = dt.strftime("%Y-%m-%d")
+                        
+                        # 休日・特別期間の判定
+                        is_weekend = dt.weekday() >= 5
+                        is_holiday = jpholiday.is_holiday(dt)
+                        is_new_year = (dt.month == 12 and dt.day >= 29) or (dt.month == 1 and dt.day <= 3)
+                        is_off_day = is_weekend or is_holiday or is_new_year
+                        
+                        # 本日の必要業務枠を計算
+                        required_tasks = []
+                        if is_off_day:
+                            required_tasks = ["ME業務"] # 休日などはME業務1名のみ
+                        else:
+                            # 平日の場合：業務マスタに登録されている略語を各1名ずつ
+                            base_tasks = [t for t in task_abbrs if t not in ["ヘルツ", "アブレーション"]]
+                            required_tasks.extend(base_tasks)
+                            
+                            # 特定の曜日の追加枠
+                            if dt.weekday() in [0, 3]: # 月曜・木曜
+                                required_tasks.extend(["ヘルツ", "ヘルツ"]) # 各2名
+                            if dt.weekday() == 3: # 木曜
+                                required_tasks.extend(["アブレーション", "アブレーション"]) # 各2名
+                                
+                        # 本日出勤可能なスタッフ（希望休を出していない人）
+                        unavailable = req_dict.get(d_str, [])
+                        available_staff = [s for s in staff_list if s not in unavailable]
+                        
+                        # ランダムに割り当てるためにシャッフル
+                        random.shuffle(available_staff)
+                        
+                        # 枠に対して割り当てを実行
+                        assigned_count = 0
+                        for task in required_tasks:
+                            if assigned_count < len(available_staff):
+                                assigned_staff = available_staff[assigned_count]
+                            else:
+                                # 出勤可能スタッフが足りない場合はダミーを生成（スタッフA, スタッフB...）
+                                dummy_idx = assigned_count - len(available_staff)
+                                assigned_staff = f"スタッフ{chr(65 + dummy_idx)}"
+                            
+                            # ドラフトデータに追加 [日時, 氏名, 割り当て業務]
+                            draft_data.append([d_str, assigned_staff, task])
+                            assigned_count += 1
+                            
+                    # ドラフトデータをスプレッドシートへ一括書き込み
+                    if draft_data:
+                        res = append_rows_batch("確定勤務表", draft_data)
+                        if res:
+                            st.success(f"{target_year}年{target_month}月のドラフトを作成し、スプレッドシートへ追記しました！\nホーム画面のカレンダー・シフト表で確認してください。")
+                    else:
+                        st.warning("生成対象のデータがありませんでした。")
+                        
+        st.markdown('</div>', unsafe_allow_html=True)
+
 
 def page_staff():
     st.markdown('<div class="card"><h2>③ スタッフマスタ管理</h2><p>スタッフの基本情報や各分野の習熟度を管理します。</p></div>', unsafe_allow_html=True)
@@ -757,7 +915,7 @@ def main():
     
     pages = {
         "① ホーム（月間勤務表・シフト）": page_home,
-        "② 予定・各種マスタ管理": page_schedule_task,
+        "② 予定・マスタ・自動ドラフト管理": page_schedule_task,
         "③ スタッフマスタ管理": page_staff
     }
     
