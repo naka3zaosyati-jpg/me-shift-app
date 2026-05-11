@@ -3,6 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 import datetime
+import calendar
 
 # --- 初期設定 ---
 st.set_page_config(
@@ -175,7 +176,6 @@ def update_data(sheet_name, search_col_index, search_value, row_data):
         spreadsheet = client.open_by_key(sheet_id)
         sheet = spreadsheet.worksheet(sheet_name)
         
-        # 指定列から値を検索 (1列目の場合は in_column=1)
         try:
             cell = sheet.find(str(search_value), in_column=search_col_index)
         except gspread.exceptions.CellNotFound:
@@ -184,18 +184,14 @@ def update_data(sheet_name, search_col_index, search_value, row_data):
             
         row_num = cell.row
         
-        # 列の終端文字を計算 (A〜Zを想定、列数が最大26までの簡易計算)
         end_col_chr = chr(ord('A') + len(row_data) - 1)
         range_str = f"A{row_num}:{end_col_chr}{row_num}"
         
-        # 更新処理 (gspreadのバージョン互換を考慮して try-except を使用)
         try:
             res = sheet.update(range_name=range_str, values=[row_data], value_input_option="USER_ENTERED")
         except TypeError:
-            # 古いgspread向けの書き方
             res = sheet.update(range_str, [row_data], value_input_option="USER_ENTERED")
             
-        # キャッシュをクリアして次回fetch時に最新状態を反映
         st.cache_data.clear()
         
         return res
@@ -214,56 +210,221 @@ COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
 # --- ページUI コンポーネント ---
 
 def page_home():
-    st.markdown('<div class="card"><h2>① ホーム（確定勤務表の確認）</h2><p>確定した勤務表や本日のシフト、術式予定を確認します。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h2>① ホーム（月間カレンダー）</h2><p>確定した勤務表や術式予定をカレンダー形式で確認します。</p></div>', unsafe_allow_html=True)
     
     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
     df_ope = fetch_data("術式予定", COLS_OPE_SCHEDULE)
     
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    col1, col2 = st.columns([1, 3])
+    
+    # ----------------------------------------------------
+    # 年月の選択機能
+    # ----------------------------------------------------
+    today = datetime.date.today()
+    years = list(range(today.year - 1, today.year + 2))
+    months = list(range(1, 13))
+    
+    col1, col2, _ = st.columns([1, 1, 4])
     with col1:
-        date_filter = st.date_input("表示日を選択", datetime.date.today())
+        selected_year = st.selectbox("年を選択", years, index=years.index(today.year))
+    with col2:
+        selected_month = st.selectbox("月を選択", months, index=months.index(today.month))
     
-    date_str = str(date_filter)
+    # Pythonのcalendarモジュールを使用して、指定された年月のカレンダーを生成（日曜始まり）
+    cal = calendar.Calendar(firstweekday=6)
+    month_days = cal.monthdatescalendar(selected_year, selected_month)
     
-    st.write("### 📅 確定勤務表")
+    # ----------------------------------------------------
+    # データの前処理 (日付 YYYY-MM-DD をキーにした辞書を作成)
+    # ----------------------------------------------------
+    shift_dict = {}
     if not df_shift.empty:
-        filtered_shift = df_shift[df_shift["日時"].astype(str).str.contains(date_str)]
-        if not filtered_shift.empty:
-            st.dataframe(filtered_shift, use_container_width=True)
-        else:
-            st.info(f"{date_str} の勤務表データがありません。")
-    else:
-        st.info("確定された勤務表データがありません。")
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.write("### 🏥 本日の術式予定")
+        for _, row in df_shift.iterrows():
+            # YYYY/MM/DD の表記ゆれを吸収
+            d_str = str(row["日時"]).strip().replace('/', '-')
+            if len(d_str) >= 10:
+                d_key = d_str[:10]
+                staff_info = f"{row['氏名']} ({row['割り当て業務']})"
+                if d_key not in shift_dict:
+                    shift_dict[d_key] = []
+                shift_dict[d_key].append(staff_info)
+
+    ope_dict = {}
     if not df_ope.empty:
-        filtered_ope = df_ope[df_ope["日時"].astype(str).str.contains(date_str)]
-        if not filtered_ope.empty:
-            st.dataframe(filtered_ope, use_container_width=True)
-        else:
-            st.info(f"{date_str} の術式予定はありません。")
-    else:
-        st.info("術式予定データがありません。")
+        for _, row in df_ope.iterrows():
+            d_str = str(row["日時"]).strip().replace('/', '-')
+            if len(d_str) >= 10:
+                d_key = d_str[:10]
+                ope_info = str(row['術式'])
+                if d_key not in ope_dict:
+                    ope_dict[d_key] = []
+                ope_dict[d_key].append(ope_info)
+                
+    # ----------------------------------------------------
+    # CSS (カレンダー用グリッドデザイン)
+    # ----------------------------------------------------
+    calendar_css = """
+    <style>
+        .calendar-container {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 8px;
+            margin-top: 15px;
+        }
+        .calendar-header {
+            text-align: center;
+            font-weight: bold;
+            background-color: #F8F9FA;
+            padding: 10px;
+            border-radius: 8px;
+            color: #495057;
+            border: 1px solid #E9ECEF;
+        }
+        .calendar-day {
+            background-color: #FFFFFF;
+            border: 1px solid #E9ECEF;
+            border-radius: 8px;
+            min-height: 140px;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            transition: transform 0.1s;
+        }
+        .calendar-day:hover {
+            transform: scale(1.02);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+            z-index: 10;
+        }
+        .calendar-day.other-month {
+            background-color: #F8F9FA;
+            opacity: 0.5;
+        }
+        .day-number {
+            font-size: 1.3rem;
+            font-weight: 800;
+            color: #0056B3;
+            text-align: left;
+            margin-bottom: 0px;
+        }
+        .day-weekday {
+            font-size: 0.75rem;
+            color: #6C757D;
+            text-align: left;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #E9ECEF;
+            padding-bottom: 4px;
+            font-weight: bold;
+        }
+        .day-staff {
+            font-size: 0.85rem;
+            color: #212529;
+            flex-grow: 1; /* 余白を埋めることで下の day-ope を押し下げる */
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+        .day-ope {
+            font-size: 0.8rem;
+            color: #D63384;
+            font-weight: bold;
+            margin-top: 8px; /* 一番下に配置させるためのマージン */
+            background-color: #FFF0F6;
+            padding: 4px 6px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            border-left: 3px solid #D63384;
+        }
+    </style>
+    """
+    
+    st.markdown(calendar_css, unsafe_allow_html=True)
+    
+    weekdays = ["日", "月", "火", "水", "木", "金", "土"]
+    
+    # ----------------------------------------------------
+    # HTML生成: ヘッダー部分
+    # ----------------------------------------------------
+    html = '<div class="calendar-container">'
+    for wd in weekdays:
+        # 日曜は赤、土曜は青
+        color_style = ""
+        if wd == "日":
+            color_style = "color: #DC3545;"
+        elif wd == "土":
+            color_style = "color: #0D6EFD;"
+            
+        html += f'<div class="calendar-header" style="{color_style}">{wd}</div>'
+    
+    # ----------------------------------------------------
+    # HTML生成: 日付のマス部分
+    # ----------------------------------------------------
+    for week in month_days:
+        for d in week:
+            is_other_month = d.month != selected_month
+            class_name = "calendar-day other-month" if is_other_month else "calendar-day"
+            
+            d_str = d.strftime("%Y-%m-%d")
+            day_num = d.day
+            weekday_str = ["月", "火", "水", "木", "金", "土", "日"][d.weekday()]
+            
+            # 日付の色（日曜は赤、土曜は青）
+            day_color_style = ""
+            if d.weekday() == 6: # 日曜
+                day_color_style = "color: #DC3545;"
+            elif d.weekday() == 5: # 土曜
+                day_color_style = "color: #0D6EFD;"
+                
+            # その日の情報を取得
+            staffs = shift_dict.get(d_str, [])
+            opes = ope_dict.get(d_str, [])
+            
+            # HTML文字列として改行で結合
+            staff_html = "<br>".join(staffs) if staffs else ""
+            ope_html = "<br>".join(opes) if opes else ""
+            
+            # マスの構成: ①日 ②曜日 ③氏名と業務 ④術式
+            html += f'<div class="{class_name}">'
+            html += f'<div class="day-number" style="{day_color_style}">{day_num}</div>'
+            html += f'<div class="day-weekday">{weekday_str}曜日</div>'
+            html += f'<div class="day-staff">{staff_html}</div>'
+            if ope_html:
+                html += f'<div class="day-ope">{ope_html}</div>'
+            html += '</div>'
+            
+    html += '</div>' # grid container 終了
+    
+    st.markdown(html, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     
+    # ----------------------------------------------------
+    # 以前の集計表機能の維持
+    # ----------------------------------------------------
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.write("### 📊 業務割り当て総合回数（集計表）")
+    st.write(f"### 📊 {selected_year}年{selected_month}月 業務割り当て総合回数（集計表）")
     if not df_shift.empty:
-        try:
-            summary_df = pd.pivot_table(
-                df_shift, 
-                index="氏名", 
-                columns="割り当て業務", 
-                aggfunc="size", 
-                fill_value=0
-            )
-            summary_df["合計"] = summary_df.sum(axis=1)
-            st.dataframe(summary_df, use_container_width=True)
-        except Exception as e:
-            st.warning(f"集計処理中にエラーが発生しました: {e}")
+        # 選択された年月に前方一致するものを抽出
+        month_prefix = f"{selected_year}-{selected_month:02d}"
+        
+        # '/' も '-' に統一してフィルタリング
+        df_month = df_shift.copy()
+        df_month["日時"] = df_month["日時"].astype(str).str.strip().str.replace('/', '-')
+        df_month = df_month[df_month["日時"].str.startswith(month_prefix)]
+        
+        if not df_month.empty:
+            try:
+                summary_df = pd.pivot_table(
+                    df_month, 
+                    index="氏名", 
+                    columns="割り当て業務", 
+                    aggfunc="size", 
+                    fill_value=0
+                )
+                summary_df["合計"] = summary_df.sum(axis=1)
+                st.dataframe(summary_df, use_container_width=True)
+            except Exception as e:
+                st.warning(f"集計処理中にエラーが発生しました: {e}")
+        else:
+            st.info(f"{selected_year}年{selected_month}月の勤務表データがありません。")
     else:
         st.info("集計する勤務表データがありません。")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -516,6 +677,7 @@ def page_staff():
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### スタッフ一覧")
+    # キャッシュクリアされているため、ここで最新データが取得され一覧に反映される
     df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
     st.dataframe(df_staff, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -528,7 +690,7 @@ def main():
     
     pages = {
         "① ホーム（確定勤務表の確認）": page_home,
-        "② 予定・業務管理": page_schedule_task,
+        "② 予定・各種マスタ管理": page_schedule_task,
         "③ スタッフマスタ管理": page_staff
     }
     
