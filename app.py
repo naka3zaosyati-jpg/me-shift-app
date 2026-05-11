@@ -69,45 +69,59 @@ st.markdown("""
 # --- Google Sheets API 接続 ---
 @st.cache_resource
 def get_gspread_client():
+    """
+    gspreadクライアントと、エラー発生時のメッセージを返す
+    戻り値: (client, error_message)
+    """
     try:
-        # st.secretsからGCPサービスアカウント情報を取得
         if "gcp_service_account" in st.secrets:
             scopes = [
                 "https://www.googleapis.com/auth/spreadsheets",
                 "https://www.googleapis.com/auth/drive"
             ]
+            # st.secrets の内容を辞書型に変換して渡す（一部環境でのエラー防止）
+            info = dict(st.secrets["gcp_service_account"])
             credentials = Credentials.from_service_account_info(
-                st.secrets["gcp_service_account"],
+                info,
                 scopes=scopes
             )
-            return gspread.authorize(credentials)
+            client = gspread.authorize(credentials)
+            return client, None
         else:
-            return None
+            return None, "st.secrets に 'gcp_service_account' が設定されていません。"
     except Exception as e:
-        st.error(f"認証エラー: {e}")
-        return None
+        return None, str(e)
 
 def get_sheet(sheet_name):
-    client = get_gspread_client()
+    client, _ = get_gspread_client()
     if not client:
         return None
     try:
-        sheet_id = st.secrets.get("spreadsheet_id", "")
-        if not sheet_id:
+        # スプレッドシートIDを読み込み
+        if "spreadsheet_id" in st.secrets:
+            sheet_id = st.secrets["spreadsheet_id"]
+        else:
             return None
+        
         spreadsheet = client.open_by_key(sheet_id)
         return spreadsheet.worksheet(sheet_name)
     except Exception as e:
+        # データ取得時のエラーも表示させる場合はここに出力
+        st.error(f"シート「{sheet_name}」の取得に失敗しました: {e}")
         return None
 
 # --- CRUD ラッパー関数 ---
 def fetch_data(sheet_name, expected_columns):
     sheet = get_sheet(sheet_name)
     if sheet:
-        records = sheet.get_all_records()
-        if records:
-            return pd.DataFrame(records)
-        else:
+        try:
+            records = sheet.get_all_records()
+            if records:
+                return pd.DataFrame(records)
+            else:
+                return pd.DataFrame(columns=expected_columns)
+        except Exception as e:
+            st.error(f"シート「{sheet_name}」のデータ読み込みエラー: {e}")
             return pd.DataFrame(columns=expected_columns)
     else:
         # API未設定時のプロトタイプ用モックデータ
@@ -116,8 +130,12 @@ def fetch_data(sheet_name, expected_columns):
 def append_data(sheet_name, row_data):
     sheet = get_sheet(sheet_name)
     if sheet:
-        sheet.append_row(row_data)
-        return True
+        try:
+            sheet.append_row(row_data)
+            return True
+        except Exception as e:
+            st.error(f"シート「{sheet_name}」への書き込みエラー: {e}")
+            return False
     return False
 
 # --- カラム定義（スプレッドシートの列名） ---
@@ -331,14 +349,29 @@ def main():
     
     st.sidebar.markdown("---")
     
-    # 接続ステータスの表示
+    # --- 接続ステータスの表示とエラーハンドリング ---
     st.sidebar.caption("システムステータス:")
-    if get_gspread_client() is None:
-        st.sidebar.error("🔴 DB未接続\n\n(st.secrets を設定してください)")
+    
+    client, error_msg = get_gspread_client()
+    
+    if client is None:
+        st.sidebar.error("🔴 DB未接続 (認証エラー)")
+        st.sidebar.error(f"エラー詳細:\n{error_msg}")
         st.sidebar.info("現在はプロトタイプ（UIデモ）として動作しています。")
     else:
-        st.sidebar.success("🟢 DB接続済 (Google Sheets)")
-        
+        # 認証は成功したので、スプレッドシートへのアクセスをテスト
+        if "spreadsheet_id" not in st.secrets:
+            st.sidebar.error("🔴 DB未接続 (ID未設定)")
+            st.sidebar.error("エラー詳細:\nst.secrets に 'spreadsheet_id' が設定されていません。")
+        else:
+            try:
+                sheet_id = st.secrets["spreadsheet_id"]
+                client.open_by_key(sheet_id)
+                st.sidebar.success("🟢 DB接続済 (Google Sheets)")
+            except Exception as e:
+                st.sidebar.error("🔴 DB未接続 (アクセス失敗)")
+                st.sidebar.error(f"エラー詳細:\nスプレッドシートが開けません。IDが間違っているか、サービスアカウントに共有されていません。\nException: {e}")
+
     # 選択されたページを描画
     pages[selection]()
 
