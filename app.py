@@ -4,6 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import datetime
 import calendar
+import io
 
 # --- 初期設定 ---
 st.set_page_config(
@@ -76,6 +77,18 @@ def safe_int(val):
         return int(float(val))
     except (ValueError, TypeError):
         return 0
+
+def parse_date(date_val):
+    """日付文字列を YYYY-MM-DD 形式に統一して返す（バグ回避用）"""
+    if pd.isna(date_val) or str(date_val).strip() == "":
+        return None
+    d_str = str(date_val).strip()
+    try:
+        # pandasのto_datetimeを使用して多様な形式（YYYY/MM/DD等）を柔軟にパース
+        dt = pd.to_datetime(d_str)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return None
 
 # --- Google Sheets API 接続 ---
 def get_gspread_client():
@@ -210,7 +223,7 @@ COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
 # --- ページUI コンポーネント ---
 
 def page_home():
-    st.markdown('<div class="card"><h2>① ホーム（月間カレンダー）</h2><p>確定した勤務表や術式予定をカレンダー形式で確認します。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h2>① ホーム（月間勤務表・シフト）</h2><p>確定した勤務表や術式予定を確認します。</p></div>', unsafe_allow_html=True)
     
     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
     df_ope = fetch_data("術式予定", COLS_OPE_SCHEDULE)
@@ -230,20 +243,19 @@ def page_home():
     with col2:
         selected_month = st.selectbox("月を選択", months, index=months.index(today.month))
     
-    # Pythonのcalendarモジュールを使用して、指定された年月のカレンダーを生成（日曜始まり）
+    # Pythonのcalendarモジュールを使用してカレンダーを生成（日曜始まり）
     cal = calendar.Calendar(firstweekday=6)
     month_days = cal.monthdatescalendar(selected_year, selected_month)
     
     # ----------------------------------------------------
     # データの前処理 (日付 YYYY-MM-DD をキーにした辞書を作成)
+    # バグ修正: parse_date関数を用いて表記揺れを吸収
     # ----------------------------------------------------
     shift_dict = {}
     if not df_shift.empty:
         for _, row in df_shift.iterrows():
-            # YYYY/MM/DD の表記ゆれを吸収
-            d_str = str(row["日時"]).strip().replace('/', '-')
-            if len(d_str) >= 10:
-                d_key = d_str[:10]
+            d_key = parse_date(row["日時"])
+            if d_key:
                 staff_info = f"{row['氏名']} ({row['割り当て業務']})"
                 if d_key not in shift_dict:
                     shift_dict[d_key] = []
@@ -252,9 +264,8 @@ def page_home():
     ope_dict = {}
     if not df_ope.empty:
         for _, row in df_ope.iterrows():
-            d_str = str(row["日時"]).strip().replace('/', '-')
-            if len(d_str) >= 10:
-                d_key = d_str[:10]
+            d_key = parse_date(row["日時"])
+            if d_key:
                 ope_info = str(row['術式'])
                 if d_key not in ope_dict:
                     ope_dict[d_key] = []
@@ -341,23 +352,15 @@ def page_home():
     
     weekdays = ["日", "月", "火", "水", "木", "金", "土"]
     
-    # ----------------------------------------------------
     # HTML生成: ヘッダー部分
-    # ----------------------------------------------------
     html = '<div class="calendar-container">'
     for wd in weekdays:
-        # 日曜は赤、土曜は青
         color_style = ""
-        if wd == "日":
-            color_style = "color: #DC3545;"
-        elif wd == "土":
-            color_style = "color: #0D6EFD;"
-            
+        if wd == "日": color_style = "color: #DC3545;"
+        elif wd == "土": color_style = "color: #0D6EFD;"
         html += f'<div class="calendar-header" style="{color_style}">{wd}</div>'
     
-    # ----------------------------------------------------
     # HTML生成: 日付のマス部分
-    # ----------------------------------------------------
     for week in month_days:
         for d in week:
             is_other_month = d.month != selected_month
@@ -367,22 +370,16 @@ def page_home():
             day_num = d.day
             weekday_str = ["月", "火", "水", "木", "金", "土", "日"][d.weekday()]
             
-            # 日付の色（日曜は赤、土曜は青）
             day_color_style = ""
-            if d.weekday() == 6: # 日曜
-                day_color_style = "color: #DC3545;"
-            elif d.weekday() == 5: # 土曜
-                day_color_style = "color: #0D6EFD;"
+            if d.weekday() == 6: day_color_style = "color: #DC3545;"
+            elif d.weekday() == 5: day_color_style = "color: #0D6EFD;"
                 
-            # その日の情報を取得
             staffs = shift_dict.get(d_str, [])
             opes = ope_dict.get(d_str, [])
             
-            # HTML文字列として改行で結合
             staff_html = "<br>".join(staffs) if staffs else ""
             ope_html = "<br>".join(opes) if opes else ""
             
-            # マスの構成: ①日 ②曜日 ③氏名と業務 ④術式
             html += f'<div class="{class_name}">'
             html += f'<div class="day-number" style="{day_color_style}">{day_num}</div>'
             html += f'<div class="day-weekday">{weekday_str}曜日</div>'
@@ -391,42 +388,112 @@ def page_home():
                 html += f'<div class="day-ope">{ope_html}</div>'
             html += '</div>'
             
-    html += '</div>' # grid container 終了
+    html += '</div>'
     
     st.markdown(html, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     
     # ----------------------------------------------------
-    # 以前の集計表機能の維持
+    # 横型シフト表 ＆ 集計表 (タブで切り替え表示)
     # ----------------------------------------------------
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.write(f"### 📊 {selected_year}年{selected_month}月 業務割り当て総合回数（集計表）")
-    if not df_shift.empty:
-        # 選択された年月に前方一致するものを抽出
-        month_prefix = f"{selected_year}-{selected_month:02d}"
+    tab_shift, tab_summary = st.tabs(["📋 横型シフト表", "📊 業務割り当て集計表"])
+    
+    with tab_shift:
+        st.write(f"### 📋 {selected_year}年{selected_month}月 横型シフト表")
         
-        # '/' も '-' に統一してフィルタリング
-        df_month = df_shift.copy()
-        df_month["日時"] = df_month["日時"].astype(str).str.strip().str.replace('/', '-')
-        df_month = df_month[df_month["日時"].str.startswith(month_prefix)]
+        # スタッフ一覧を取得（縦軸のインデックスとして使用）
+        df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
+        staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
         
-        if not df_month.empty:
+        # 選択された月の日数分の列を作成（例: '1日', '2日', ...）
+        _, num_days = calendar.monthrange(selected_year, selected_month)
+        days_cols = [f"{d}日" for d in range(1, num_days + 1)]
+        
+        # 空のクロス集計表(DataFrame)を生成
+        shift_matrix = pd.DataFrame(index=staff_list, columns=days_cols)
+        shift_matrix.fillna("", inplace=True)
+        
+        # 確定勤務表データを埋め込む
+        if not df_shift.empty:
+            for _, row in df_shift.iterrows():
+                d_key = parse_date(row["日時"])
+                if d_key:
+                    try:
+                        dt = datetime.datetime.strptime(d_key, "%Y-%m-%d")
+                        # 選択された年月に該当するデータのみ処理
+                        if dt.year == selected_year and dt.month == selected_month:
+                            staff_name = str(row["氏名"])
+                            duty = str(row["割り当て業務"])
+                            if staff_name in shift_matrix.index:
+                                day_str = f"{dt.day}日"
+                                curr_val = shift_matrix.at[staff_name, day_str]
+                                # 同じ日に複数業務がある場合は改行して追記
+                                if curr_val:
+                                    shift_matrix.at[staff_name, day_str] = curr_val + "\n" + duty
+                                else:
+                                    shift_matrix.at[staff_name, day_str] = duty
+                    except Exception:
+                        pass
+                        
+        st.dataframe(shift_matrix, use_container_width=True)
+        
+        # Excelダウンロード機能
+        try:
+            buffer = io.BytesIO()
+            # xlsxwriter がインストールされているか確認しつつ書き込み
             try:
-                summary_df = pd.pivot_table(
-                    df_month, 
-                    index="氏名", 
-                    columns="割り当て業務", 
-                    aggfunc="size", 
-                    fill_value=0
-                )
-                summary_df["合計"] = summary_df.sum(axis=1)
-                st.dataframe(summary_df, use_container_width=True)
-            except Exception as e:
-                st.warning(f"集計処理中にエラーが発生しました: {e}")
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    shift_matrix.to_excel(writer, sheet_name=f"{selected_month}月シフト")
+            except Exception:
+                # 無い場合は openpyxl で試行
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    shift_matrix.to_excel(writer, sheet_name=f"{selected_month}月シフト")
+            
+            st.download_button(
+                label="📥 Excel形式でダウンロード (.xlsx)",
+                data=buffer.getvalue(),
+                file_name=f"shift_{selected_year}_{selected_month}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception as e:
+            st.warning("Excel出力用ライブラリ(xlsxwriter/openpyxl)が見つからないため、代替としてCSV形式で出力します。")
+            csv = shift_matrix.to_csv(encoding="utf-8-sig")
+            st.download_button(
+                label="📥 CSV形式でダウンロード (.csv)",
+                data=csv,
+                file_name=f"shift_{selected_year}_{selected_month}.csv",
+                mime="text/csv"
+            )
+
+    with tab_summary:
+        st.write(f"### 📊 {selected_year}年{selected_month}月 業務割り当て総合回数")
+        if not df_shift.empty:
+            df_month = df_shift.copy()
+            # parse_date を適用してフォーマットを統一
+            df_month["日時"] = df_month["日時"].apply(parse_date)
+            # 選択年月のデータのみに絞り込む
+            month_prefix = f"{selected_year}-{selected_month:02d}"
+            df_month = df_month[df_month["日時"].astype(str).str.startswith(month_prefix)]
+            
+            if not df_month.empty:
+                try:
+                    summary_df = pd.pivot_table(
+                        df_month, 
+                        index="氏名", 
+                        columns="割り当て業務", 
+                        aggfunc="size", 
+                        fill_value=0
+                    )
+                    summary_df["合計"] = summary_df.sum(axis=1)
+                    st.dataframe(summary_df, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"集計処理中にエラーが発生しました: {e}")
+            else:
+                st.info(f"{selected_year}年{selected_month}月の勤務表データがありません。")
         else:
-            st.info(f"{selected_year}年{selected_month}月の勤務表データがありません。")
-    else:
-        st.info("集計する勤務表データがありません。")
+            st.info("集計する勤務表データがありません。")
+            
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -689,7 +756,7 @@ def main():
     st.sidebar.markdown("---")
     
     pages = {
-        "① ホーム（確定勤務表の確認）": page_home,
+        "① ホーム（月間勤務表・シフト）": page_home,
         "② 予定・各種マスタ管理": page_schedule_task,
         "③ スタッフマスタ管理": page_staff
     }
