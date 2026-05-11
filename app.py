@@ -985,6 +985,22 @@ def page_shift_creation():
                 # 均等化アルゴリズム用：スタッフごとの各業務カウントを保持
                 staff_task_counts = {s: {} for s in staff_list}
                 
+                # ----------------------------------------------------
+                # 年間・累積の均等化を実現するため、過去の確定勤務表データを読み込む
+                # ----------------------------------------------------
+                df_history = fetch_data("確定勤務表", COLS_SHIFT)
+                if not df_history.empty:
+                    df_history["_date_str"] = df_history["日時"].apply(parse_date)
+                    for _, row in df_history.iterrows():
+                        if pd.isna(row["_date_str"]) or not row["_date_str"]: continue
+                        h_date = pd.to_datetime(row["_date_str"])
+                        # 今作成しようとしている月より「前」のデータを累積カウントとして初期値に設定
+                        if h_date.year < target_year or (h_date.year == target_year and h_date.month < target_month):
+                            s_name = str(row["氏名"])
+                            t_name = str(row["割り当て業務"])
+                            if s_name in staff_task_counts:
+                                staff_task_counts[s_name][t_name] = staff_task_counts[s_name].get(t_name, 0) + 1
+                                
                 def get_count(staff, task):
                     return staff_task_counts.get(staff, {}).get(task, 0)
                     
@@ -1006,11 +1022,11 @@ def page_shift_creation():
                     # 曜日・休日ごとの必要業務ルール
                     required_tasks = []
                     if is_off_day:
-                        # 土日祝・年末年始
-                        required_tasks = ["日勤", "宿直"]
+                        # 土日祝・年末年始は日勤1名のみ（あとでこの人が宿直も兼ねる）
+                        required_tasks = ["日勤"]
                     else:
-                        # 平日ベース
-                        required_tasks = ["カ", "Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ", "宿直"]
+                        # 平日ベース（宿直は後で日勤者から選ぶためここには含めない）
+                        required_tasks = ["カ", "Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ"]
                         if dt.weekday() == 0: # 月曜日
                             required_tasks.extend(["ＨＭ", "Ｈサ"])
                         elif dt.weekday() == 3: # 木曜日
@@ -1020,13 +1036,14 @@ def page_shift_creation():
                     unavailable = req_dict.get(d_str, [])
                     available_staff = [s for s in staff_list if s not in unavailable]
                     
-                    # 業務ごとに均等に割り当てる
+                    # 1. まず日中帯の通常業務（日勤等）を割り当てる
+                    assigned_today_staffs = []
                     dummy_counter = 0
                     for task in required_tasks:
                         if available_staff:
-                            # 割り当て回数が同じ人がいる場合にランダムになるようシャッフル
+                            # 割り当て回数が同じ人がいる場合にランダムになるよう事前にシャッフル
                             random.shuffle(available_staff)
-                            # これまでの該当業務の割り当て回数が少ない順にソート（昇順）
+                            # 過去からの該当業務の累積回数が少ない順にソート（昇順）
                             available_staff.sort(key=lambda s: get_count(s, task))
                             
                             # 最も回数が少ないスタッフをアサイン
@@ -1038,6 +1055,23 @@ def page_shift_creation():
                             dummy_counter += 1
                             
                         draft_data.append([d_str, assigned_staff, task])
+                        assigned_today_staffs.append(assigned_staff)
+                        
+                    # 2. 宿直の割り当て（日勤者の中から重複割り当て）
+                    if assigned_today_staffs:
+                        # ダミースタッフを除外して、実在のスタッフから候補を絞る
+                        real_assigned = [s for s in assigned_today_staffs if s in staff_list]
+                        candidates = real_assigned if real_assigned else assigned_today_staffs
+                        
+                        random.shuffle(candidates)
+                        # 宿直の累積回数が少ない人を優先してソート
+                        candidates.sort(key=lambda s: get_count(s, "宿直"))
+                        
+                        night_staff = candidates[0]
+                        increment_count(night_staff, "宿直")
+                        
+                        # 同一人物・同一日付で「宿直」行を追加
+                        draft_data.append([d_str, night_staff, "宿直"])
                         
                 if draft_data:
                     # 既存の確定勤務表データを取得し、該当月のデータを洗い替えする
@@ -1045,9 +1079,10 @@ def page_shift_creation():
                     month_prefix = f"{target_year}-{target_month:02d}"
                     
                     if not df_shift.empty:
-                        df_shift["_date_str"] = df_shift["日時"].apply(parse_date)
+                        if "_date_str" not in df_shift.columns:
+                            df_shift["_date_str"] = df_shift["日時"].apply(parse_date)
                         # 対象月以外のデータを残す
-                        df_remain = df_shift[~df_shift["_date_str"].astype(str).str.startswith(month_prefix)].drop(columns=["_date_str"])
+                        df_remain = df_shift[~df_shift["_date_str"].astype(str).str.startswith(month_prefix)].drop(columns=["_date_str"], errors="ignore")
                     else:
                         df_remain = pd.DataFrame(columns=COLS_SHIFT)
                         
