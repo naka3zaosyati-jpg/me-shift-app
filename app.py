@@ -66,11 +66,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- ヘルパー関数 ---
+def safe_int(val):
+    """NaNや空文字を安全に0に変換するヘルパー関数"""
+    if pd.isna(val) or val == "":
+        return 0
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return 0
+
 # --- Google Sheets API 接続 ---
 def get_gspread_client():
     """
     gspreadクライアントと、エラー発生時のメッセージを返す
-    戻り値: (client, error_message)
     """
     try:
         if "gcp_service_account" in st.secrets:
@@ -105,7 +114,6 @@ def _fetch_records_cached(sheet_name):
         sheet_id = st.secrets.get("spreadsheet_id", "")
         spreadsheet = client.open_by_key(sheet_id)
         sheet = spreadsheet.worksheet(sheet_name)
-        # スプレッドシートから全件取得
         return sheet.get_all_records()
     except Exception as e:
         st.error(f"データ取得エラー ({sheet_name}): {e}")
@@ -119,7 +127,6 @@ def fetch_data(sheet_name, expected_columns):
     if records is not None:
         if records:
             df = pd.DataFrame(records)
-            # 空の行（すべてがNaNまたは空文字の行など）を削除して整形
             df.dropna(how='all', inplace=True)
             return df
         else:
@@ -130,7 +137,6 @@ def fetch_data(sheet_name, expected_columns):
 def append_data(sheet_name, row_data):
     """
     スプレッドシートへの直接書き込みとキャッシュクリアを実行する。
-    成功時はGoogle Sheets APIからのレスポンス(dict)を返し、失敗時はFalseを返す。
     """
     client, _ = get_gspread_client()
     if not client:
@@ -142,23 +148,59 @@ def append_data(sheet_name, row_data):
         spreadsheet = client.open_by_key(sheet_id)
         sheet = spreadsheet.worksheet(sheet_name)
         
-        # gspread の append_row を使って、スプレッドシートへ直接データを書き込む。
-        # 確実に表の直下を狙うために table_range="A1" を指定し、
-        # 空行による不具合を避けるために insert_data_option="INSERT_ROWS" を指定します。
         res = sheet.append_row(
             row_data, 
             value_input_option="USER_ENTERED",
             insert_data_option="INSERT_ROWS",
             table_range="A1"
         )
+        st.cache_data.clear()
+        return res
+    except Exception as e:
+        st.error(f"シート「{sheet_name}」への書き込みでエラーが発生しました。\n詳細: {e}")
+        return False
+
+def update_data(sheet_name, search_col_index, search_value, row_data):
+    """
+    指定した列(search_col_index: 1始まり)から search_value を検索し、
+    見つかった行を row_data で上書き更新する。
+    """
+    client, _ = get_gspread_client()
+    if not client:
+        st.error(f"DB未接続のため、シート「{sheet_name}」の更新ができません。")
+        return False
         
-        # Streamlitのキャッシュをクリアし、次回 fetch_data 時に最新データを強制的に取得させる
+    try:
+        sheet_id = st.secrets.get("spreadsheet_id", "")
+        spreadsheet = client.open_by_key(sheet_id)
+        sheet = spreadsheet.worksheet(sheet_name)
+        
+        # 指定列から値を検索 (1列目の場合は in_column=1)
+        try:
+            cell = sheet.find(str(search_value), in_column=search_col_index)
+        except gspread.exceptions.CellNotFound:
+            st.error(f"指定されたデータ（{search_value}）がスプレッドシート上で見つかりませんでした。")
+            return False
+            
+        row_num = cell.row
+        
+        # 列の終端文字を計算 (A〜Zを想定、列数が最大26までの簡易計算)
+        end_col_chr = chr(ord('A') + len(row_data) - 1)
+        range_str = f"A{row_num}:{end_col_chr}{row_num}"
+        
+        # 更新処理 (gspreadのバージョン互換を考慮して try-except を使用)
+        try:
+            res = sheet.update(range_name=range_str, values=[row_data], value_input_option="USER_ENTERED")
+        except TypeError:
+            # 古いgspread向けの書き方
+            res = sheet.update(range_str, [row_data], value_input_option="USER_ENTERED")
+            
+        # キャッシュをクリアして次回fetch時に最新状態を反映
         st.cache_data.clear()
         
         return res
     except Exception as e:
-        # 失敗時には具体的なエラー内容を try-except で拾って画面に出力
-        st.error(f"シート「{sheet_name}」への書き込みでエラーが発生しました。\n詳細: {e}")
+        st.error(f"シート「{sheet_name}」の更新処理で予期せぬエラーが発生しました。\n詳細: {e}")
         return False
 
 # --- カラム定義（スプレッドシートの列名） ---
@@ -228,9 +270,9 @@ def page_home():
 
 
 def page_schedule_task():
-    st.markdown('<div class="card"><h2>② 予定・業務管理</h2><p>術式予定、希望入力の確認・追加、および業務マスタの管理を行います。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h2>② 予定・各種マスタ管理</h2><p>術式予定、希望入力の追加、および各マスタの管理（追加・更新）を行います。</p></div>', unsafe_allow_html=True)
     
-    tab1, tab2, tab3 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理"])
+    tab1, tab2, tab3, tab4 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理", "術式マスタ管理"])
     
     with tab1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -287,17 +329,35 @@ def page_schedule_task():
 
     with tab3:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.write("### 業務マスタ登録")
-        with st.form("task_form", clear_on_submit=True):
-            task_abbr = st.text_input("略語 (例: HM, A)")
-            task_name = st.text_input("業務名 (例: 血液浄化, 血管造影)")
-            if st.form_submit_button("マスタ追加"):
-                try:
-                    res = append_data("業務マスタ", [task_abbr, task_name])
-                    if res:
-                        st.success("スプレッドシートに業務マスタを書き込みました。")
-                except Exception as e:
-                    st.error(f"予期せぬエラーが発生しました: {e}")
+        m_tab1, m_tab2 = st.tabs(["新規追加", "情報更新"])
+        with m_tab1:
+            st.write("### 業務マスタ登録")
+            with st.form("task_form", clear_on_submit=True):
+                task_abbr = st.text_input("略語 (例: HM, A)")
+                task_name = st.text_input("業務名 (例: 血液浄化, 血管造影)")
+                if st.form_submit_button("マスタ追加"):
+                    try:
+                        res = append_data("業務マスタ", [task_abbr, task_name])
+                        if res:
+                            st.success("スプレッドシートに業務マスタを書き込みました。")
+                    except Exception as e:
+                        st.error(f"予期せぬエラーが発生しました: {e}")
+        with m_tab2:
+            st.write("### 業務マスタ更新")
+            df_task = fetch_data("業務マスタ", COLS_TASK_MASTER)
+            if not df_task.empty:
+                abbrs = df_task["略語"].astype(str).tolist()
+                selected_abbr = st.selectbox("更新する略語を選択", abbrs)
+                curr_task = df_task[df_task["略語"].astype(str) == selected_abbr].iloc[0]
+                with st.form("task_update_form"):
+                    task_abbr_upd = st.text_input("略語（検索キーのため変更不可）", value=curr_task["略語"], disabled=True)
+                    task_name_upd = st.text_input("業務名", value=curr_task["業務名"])
+                    if st.form_submit_button("情報を更新"):
+                        res = update_data("業務マスタ", 1, task_abbr_upd, [task_abbr_upd, task_name_upd])
+                        if res:
+                            st.success(f"業務マスタ「{task_abbr_upd}」を更新しました。")
+            else:
+                st.info("データがありません。")
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -305,67 +365,157 @@ def page_schedule_task():
         st.dataframe(fetch_data("業務マスタ", COLS_TASK_MASTER), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
+    with tab4:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        om_tab1, om_tab2 = st.tabs(["新規登録", "情報更新"])
+        with om_tab1:
+            st.write("### 術式マスタ登録")
+            with st.form("ope_master_form", clear_on_submit=True):
+                ope_name = st.text_input("術式名")
+                ope_level = st.selectbox("術式レベル", ["A", "B", "C", "D"])
+                if st.form_submit_button("マスタ追加"):
+                    try:
+                        res = append_data("術式マスタ", [ope_name, ope_level])
+                        if res:
+                            st.success("スプレッドシートに術式マスタを追加しました。")
+                    except Exception as e:
+                        st.error(f"予期せぬエラー: {e}")
+        with om_tab2:
+            st.write("### 術式マスタ更新")
+            df_ope_m = fetch_data("術式マスタ", COLS_OPE_MASTER)
+            if not df_ope_m.empty:
+                o_names = df_ope_m["術式名"].astype(str).tolist()
+                sel_ope = st.selectbox("更新する術式を選択", o_names)
+                curr_ope = df_ope_m[df_ope_m["術式名"].astype(str) == sel_ope].iloc[0]
+                with st.form("ope_master_update_form"):
+                    ope_name_upd = st.text_input("術式名（変更不可）", value=curr_ope["術式名"], disabled=True)
+                    ol_idx = ["A", "B", "C", "D"].index(curr_ope["術式レベル"]) if curr_ope["術式レベル"] in ["A", "B", "C", "D"] else 0
+                    ope_level_upd = st.selectbox("術式レベル", ["A", "B", "C", "D"], index=ol_idx)
+                    if st.form_submit_button("情報を更新"):
+                        res = update_data("術式マスタ", 1, ope_name_upd, [ope_name_upd, ope_level_upd])
+                        if res:
+                            st.success(f"「{ope_name_upd}」の情報を更新しました。")
+            else:
+                st.info("データがありません。")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.write("### 術式マスタ一覧")
+        st.dataframe(fetch_data("術式マスタ", COLS_OPE_MASTER), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
 
 def page_staff():
     st.markdown('<div class="card"><h2>③ スタッフマスタ管理</h2><p>スタッフの基本情報や各分野の習熟度を管理します。</p></div>', unsafe_allow_html=True)
     
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.write("### 新規スタッフ登録 / 習熟度更新")
-    # clear_on_submit=True で登録成功後に入力フォームをリセットする
-    with st.form("staff_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            staff_name = st.text_input("氏名")
-            staff_role = st.selectbox("役職", ["技士長", "副技士長", "主任", "一般", "新人"])
-        with col2:
-            ope_level = st.selectbox("OPE習熟度", ["A", "B", "C", "D"])
-            angio_level = st.selectbox("アンギオ習熟度", ["1", "2", "3", "4"])
-        
-        st.markdown("---")
-        st.write("#### 経験回数・実績")
-        col3, col4 = st.columns(2)
-        with col3:
-            cpb_main = st.number_input("人工心肺 メイン回数", min_value=0, step=1)
-            cpb_sub = st.number_input("人工心肺 サブ回数", min_value=0, step=1)
-        with col4:
-            ablation_count = st.number_input("アブレーション回数", min_value=0, step=1)
-            catha_count = st.number_input("カテ回数", min_value=0, step=1)
+    
+    tab1, tab2 = st.tabs(["新規登録", "情報更新"])
+    
+    with tab1:
+        st.write("### 新規スタッフ登録")
+        with st.form("staff_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                staff_name = st.text_input("氏名")
+                staff_role = st.selectbox("役職", ["技士長", "副技士長", "主任", "一般", "新人"])
+            with col2:
+                ope_level = st.selectbox("OPE習熟度", ["A", "B", "C", "D"])
+                angio_level = st.selectbox("アンギオ習熟度", ["1", "2", "3", "4"])
             
-        total_code = f"{ope_level}-{angio_level}"
-        st.info(f"💡 OPE・アンギオ習熟度から生成される総合コード: **{total_code}**")
-        
-        if st.form_submit_button("スタッフ登録"):
-            # 要素数が9つ（スタッフマスタの列数）と完全に一致するリストを明示的に作成
-            row = [
-                staff_name,         # 1: 氏名
-                staff_role,         # 2: 役職
-                ope_level,          # 3: OPE習熟度
-                angio_level,        # 4: アンギオ習熟度
-                total_code,         # 5: 総合コード
-                int(cpb_main),      # 6: 人工心肺メイン回数 (確実にint化)
-                int(cpb_sub),       # 7: 人工心肺サブ回数
-                int(ablation_count),# 8: アブレーション回数
-                int(catha_count)    # 9: カテ回数
-            ]
+            st.markdown("---")
+            st.write("#### 経験回数・実績")
+            col3, col4 = st.columns(2)
+            with col3:
+                cpb_main = st.number_input("人工心肺 メイン回数", min_value=0, step=1)
+                cpb_sub = st.number_input("人工心肺 サブ回数", min_value=0, step=1)
+            with col4:
+                ablation_count = st.number_input("アブレーション回数", min_value=0, step=1)
+                catha_count = st.number_input("カテ回数", min_value=0, step=1)
+                
+            total_code = f"{ope_level}-{angio_level}"
+            st.info(f"💡 OPE・アンギオ習熟度から生成される総合コード: **{total_code}**")
             
-            try:
-                # シート名を "スタッフマスタ" に完全指定して直接書き込み処理を実行
-                res = append_data("スタッフマスタ", row)
-                if res:
-                    st.success(f"スプレッドシートに「{staff_name}」さんのデータを直接書き込みました。")
+            if st.form_submit_button("スタッフ登録"):
+                row = [
+                    staff_name, staff_role, ope_level, angio_level, total_code, 
+                    int(cpb_main), int(cpb_sub), int(ablation_count), int(catha_count)
+                ]
+                try:
+                    res = append_data("スタッフマスタ", row)
+                    if res:
+                        st.success(f"スプレッドシートに「{staff_name}」さんのデータを新規登録しました。")
+                except Exception as e:
+                    st.error(f"スタッフ登録処理中にエラーが発生しました。\n詳細: {e}")
                     
-                    # 万が一見えない場所に書き込まれた場合のために、書き込み先の範囲をデバッグ表示
-                    if isinstance(res, dict) and "updates" in res:
-                        updated_range = res["updates"].get("updatedRange", "不明")
-                        st.info(f"【確認用】シートの以下の範囲にデータが追加されました: {updated_range}")
-            except Exception as e:
-                # 失敗時には try-except で拾ってエラー内容を出力
-                st.error(f"スタッフ登録の処理中に予期せぬエラーが発生しました。\n詳細: {e}")
+    with tab2:
+        st.write("### 登録済みスタッフの情報更新")
+        df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
+        if not df_staff.empty:
+            staff_names = df_staff["氏名"].astype(str).tolist()
+            selected_staff = st.selectbox("更新するスタッフを選択", staff_names)
+            
+            # 選択されたスタッフの現在のデータを取得
+            curr = df_staff[df_staff["氏名"].astype(str) == selected_staff].iloc[0]
+            
+            with st.form("staff_update_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    # 検索のキーとするため、名前は変更不可（disabled）にする
+                    staff_name_upd = st.text_input("氏名（検索キーのため変更不可）", value=curr["氏名"], disabled=True)
+                    
+                    role_options = ["技士長", "副技士長", "主任", "一般", "新人"]
+                    r_idx = role_options.index(curr["役職"]) if curr["役職"] in role_options else 3
+                    staff_role_upd = st.selectbox("役職", role_options, index=r_idx)
+                with col2:
+                    ope_options = ["A", "B", "C", "D"]
+                    o_idx = ope_options.index(curr["OPE習熟度"]) if curr["OPE習熟度"] in ope_options else 0
+                    ope_level_upd = st.selectbox("OPE習熟度", ope_options, index=o_idx)
+                    
+                    angio_options = ["1", "2", "3", "4"]
+                    a_idx = angio_options.index(str(curr["アンギオ習熟度"])) if str(curr["アンギオ習熟度"]) in angio_options else 0
+                    angio_level_upd = st.selectbox("アンギオ習熟度", angio_options, index=a_idx)
+                
+                st.markdown("---")
+                st.write("#### 経験回数・実績")
+                col3, col4 = st.columns(2)
+                with col3:
+                    cpb_main_upd = st.number_input("人工心肺 メイン回数", min_value=0, step=1, value=safe_int(curr["人工心肺メイン回数"]))
+                    cpb_sub_upd = st.number_input("人工心肺 サブ回数", min_value=0, step=1, value=safe_int(curr["人工心肺サブ回数"]))
+                with col4:
+                    ablation_upd = st.number_input("アブレーション回数", min_value=0, step=1, value=safe_int(curr["アブレーション回数"]))
+                    catha_upd = st.number_input("カテ回数", min_value=0, step=1, value=safe_int(curr["カテ回数"]))
+                    
+                total_code_upd = f"{ope_level_upd}-{angio_level_upd}"
+                st.info(f"💡 新しい総合コード: **{total_code_upd}**")
+                
+                if st.form_submit_button("情報を更新"):
+                    row_upd = [
+                        staff_name_upd,         # 1: 氏名 (検索キー)
+                        staff_role_upd,         # 2: 役職
+                        ope_level_upd,          # 3: OPE習熟度
+                        angio_level_upd,        # 4: アンギオ習熟度
+                        total_code_upd,         # 5: 総合コード
+                        int(cpb_main_upd),      # 6: 人工心肺メイン回数
+                        int(cpb_sub_upd),       # 7: 人工心肺サブ回数
+                        int(ablation_upd),      # 8: アブレーション回数
+                        int(catha_upd)          # 9: カテ回数
+                    ]
+                    
+                    try:
+                        # 氏名（第1列）を検索キーとして上書き更新処理を実行
+                        res = update_data("スタッフマスタ", 1, staff_name_upd, row_upd)
+                        if res:
+                            st.success(f"スプレッドシートの「{staff_name_upd}」さんの情報を上書き更新しました。")
+                    except Exception as e:
+                        st.error(f"更新処理中に予期せぬエラーが発生しました。\n詳細: {e}")
+        else:
+            st.info("登録されているスタッフがいません。")
+            
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### スタッフ一覧")
-    # キャッシュクリアされているため、ここで最新データが取得され一覧に反映される
     df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
     st.dataframe(df_staff, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
