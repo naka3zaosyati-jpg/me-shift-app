@@ -293,15 +293,15 @@ def page_home():
     # ----------------------------------------------------
     # 年月の選択機能
     # ----------------------------------------------------
-    today = datetime.date.today()
-    years = list(range(today.year - 1, today.year + 2))
+    today_date = datetime.date.today()
+    years = list(range(today_date.year - 1, today_date.year + 2))
     months = list(range(1, 13))
     
     col1, col2, _ = st.columns([1, 1, 4])
     with col1:
-        selected_year = st.selectbox("年を選択", years, index=years.index(today.year))
+        selected_year = st.selectbox("年を選択", years, index=years.index(today_date.year))
     with col2:
-        selected_month = st.selectbox("月を選択", months, index=months.index(today.month))
+        selected_month = st.selectbox("月を選択", months, index=months.index(today_date.month))
     
     # Pythonのcalendarモジュールを使用してカレンダーを生成（日曜始まり）
     cal = calendar.Calendar(firstweekday=6)
@@ -331,7 +331,7 @@ def page_home():
                 ope_dict[d_key].append(ope_info)
                 
     # ----------------------------------------------------
-    # CSS (カレンダー用グリッドデザイン・休日対応版)
+    # CSS (カレンダー用グリッドデザイン)
     # ----------------------------------------------------
     calendar_css = """
     <style>
@@ -374,6 +374,11 @@ def page_home():
         .calendar-day.holiday {
             background-color: #FFF0F5;
         }
+        /* 本日の背景（淡い黄色） */
+        .calendar-day.today {
+            background-color: #FFF3CD !important;
+            border: 2px solid #FFC107 !important;
+        }
         /* その他の月 */
         .calendar-day.other-month {
             opacity: 0.5;
@@ -390,6 +395,7 @@ def page_home():
         /* 土曜・休日の日付色上書き */
         .calendar-day.saturday .day-number { color: #0D6EFD; }
         .calendar-day.holiday .day-number { color: #DC3545; }
+        .calendar-day.today .day-number { color: #856404; }
         
         .day-weekday {
             font-size: 0.75rem;
@@ -438,6 +444,7 @@ def page_home():
             is_saturday = d.weekday() == 5
             is_sunday = d.weekday() == 6
             is_holiday = jpholiday.is_holiday(d)
+            is_today = (d == today_date)
             
             class_name = "calendar-day"
             if is_other_month:
@@ -446,19 +453,32 @@ def page_home():
                 class_name += " holiday"
             elif is_saturday:
                 class_name += " saturday"
+                
+            if is_today:
+                class_name += " today"
             
             d_str = d.strftime("%Y-%m-%d")
             day_num = d.day
             
             holiday_name = jpholiday.is_holiday_name(d)
-            weekday_str = f"{weekdays[d.weekday()]}曜日"
+            # Pythonのd.weekday()は月曜=0。正しいリストを使用。
+            weekday_list_mapped = ["月", "火", "水", "木", "金", "土", "日"]
+            weekday_str = f"{weekday_list_mapped[d.weekday()]}曜日"
             if holiday_name:
                 weekday_str += f" <span style='color:#DC3545;'>({holiday_name})</span>"
                 
             staffs = shift_dict.get(d_str, [])
             opes = ope_dict.get(d_str, [])
             
-            staff_html = "<br>".join(staffs) if staffs else ""
+            # 「宿直」を紫色にハイライト
+            staff_html_parts = []
+            for s in staffs:
+                if "宿直" in s:
+                    staff_html_parts.append(f'<span style="color: #800080; font-weight: bold;">{s}</span>')
+                else:
+                    staff_html_parts.append(s)
+            
+            staff_html = "<br>".join(staff_html_parts) if staff_html_parts else ""
             ope_html = "<br>".join(opes) if opes else ""
             
             html += f'<div class="{class_name}">'
@@ -490,16 +510,16 @@ def page_home():
         
         # マルチインデックスの列を生成： (日にち, 曜日, 術式)
         cols_tuples = []
+        weekday_list_mapped = ["月", "火", "水", "木", "金", "土", "日"]
+        
         for d in range(1, num_days + 1):
             dt = datetime.date(selected_year, selected_month, d)
             d_str = dt.strftime("%Y-%m-%d")
             
             day_str = f"{d}日"
-            
             wd = dt.weekday()
             is_hol = jpholiday.is_holiday(dt)
-            weekday_list = ["月", "火", "水", "木", "金", "土", "日"]
-            weekday_str = weekday_list[wd]
+            weekday_str = weekday_list_mapped[wd]
             if is_hol:
                 weekday_str += "(祝)"
                 
@@ -524,8 +544,7 @@ def page_home():
                             
                             wd = dt.weekday()
                             is_hol = jpholiday.is_holiday(dt)
-                            weekday_list = ["月", "火", "水", "木", "金", "土", "日"]
-                            weekday_str = weekday_list[wd]
+                            weekday_str = weekday_list_mapped[wd]
                             if is_hol:
                                 weekday_str += "(祝)"
                             
@@ -545,20 +564,81 @@ def page_home():
                     except Exception:
                         pass
         
-        # 休日の列を背景色で強調表示するスタイラー関数
-        def highlight_holidays(s):
-            col_name = s.name
-            _, weekday_str, _ = col_name
-            if "日" in weekday_str or "祝" in weekday_str:
-                return ['background-color: #FDEDEC'] * len(s) # 淡い赤
-            elif "土" in weekday_str:
-                return ['background-color: #EBF5FB'] * len(s) # 淡い青
-            return [''] * len(s)
-            
-        styled_matrix = shift_matrix.style.apply(highlight_holidays, axis=0)
-                        
-        st.dataframe(styled_matrix, use_container_width=True)
+        # HTML横型シフト表の構築（縦書き・ハイライト対応）
+        html_table = """
+        <style>
+            .shift-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+            .shift-table th, .shift-table td { border: 1px solid #DEE2E6; padding: 4px; }
+            .shift-table thead th { position: sticky; top: 0; z-index: 1; }
+        </style>
+        <div style="overflow-x: auto; max-width: 100%;">
+        <table class="shift-table">
+        """
+        # Row 1: Date
+        html_table += '<thead><tr><th style="background-color: #F1F3F5; min-width: 100px;">日にち</th>'
+        for col in cols_tuples:
+            date_str, _, _ = col
+            is_today = (date_str == f"{today_date.day}日" and selected_year == today_date.year and selected_month == today_date.month)
+            bg_color = "#FFF3CD" if is_today else "#F1F3F5"
+            html_table += f'<th style="background-color: {bg_color}; text-align: center;">{date_str}</th>'
+        html_table += '</tr>'
         
+        # Row 2: Weekday
+        html_table += '<tr><th style="background-color: #F1F3F5;">曜日</th>'
+        for col in cols_tuples:
+            date_str, wd_str, _ = col
+            bg_color = "#F1F3F5"
+            text_color = "#495057"
+            is_today = (date_str == f"{today_date.day}日" and selected_year == today_date.year and selected_month == today_date.month)
+            if "土" in wd_str:
+                bg_color = "#EBF5FB"
+                text_color = "#0D6EFD"
+            elif "日" in wd_str or "祝" in wd_str:
+                bg_color = "#FDEDEC"
+                text_color = "#DC3545"
+            if is_today:
+                bg_color = "#FFF3CD"
+            html_table += f'<th style="background-color: {bg_color}; color: {text_color}; text-align: center;">{wd_str}</th>'
+        html_table += '</tr>'
+        
+        # Row 3: Operation (縦書き)
+        html_table += '<tr><th style="background-color: #F1F3F5;">術式</th>'
+        for col in cols_tuples:
+            date_str, wd_str, ope_str = col
+            bg_color = "#F8F9FA"
+            if "土" in wd_str: bg_color = "#EBF5FB"
+            elif "日" in wd_str or "祝" in wd_str: bg_color = "#FDEDEC"
+            is_today = (date_str == f"{today_date.day}日" and selected_year == today_date.year and selected_month == today_date.month)
+            if is_today: bg_color = "#FFF3CD"
+            ope_html = str(ope_str).replace("\n", "<br>")
+            html_table += f'<th style="background-color: {bg_color}; vertical-align: top; text-align: center; writing-mode: vertical-rl; text-orientation: upright; padding: 10px 5px; height: 120px; line-height: 1.5;">{ope_html}</th>'
+        html_table += '</tr></thead><tbody>'
+        
+        # Data Rows
+        for staff in shift_matrix.index:
+            html_table += f'<tr><td style="font-weight: bold; background-color: #F8F9FA; white-space: nowrap;">{staff}</td>'
+            for col in cols_tuples:
+                val = shift_matrix.at[staff, col]
+                date_str, wd_str, _ = col
+                bg_color = "#FFFFFF"
+                if "土" in wd_str: bg_color = "#F0F8FF"
+                elif "日" in wd_str or "祝" in wd_str: bg_color = "#FFF0F5"
+                is_today = (date_str == f"{today_date.day}日" and selected_year == today_date.year and selected_month == today_date.month)
+                if is_today: bg_color = "#FFFAEB"
+                
+                val_html = str(val).replace("\n", "<br>")
+                # 宿直の文字を紫色にする
+                if "宿直" in val_html:
+                    val_html = val_html.replace("宿直", '<span style="color: #800080; font-weight: bold;">宿直</span>')
+                html_table += f'<td style="background-color: {bg_color}; text-align: center; vertical-align: middle;">{val_html}</td>'
+            html_table += '</tr>'
+        html_table += '</tbody></table></div>'
+        
+        # UIにHTMLテーブルを描画
+        st.markdown(html_table, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # ダウンロード用のExcel生成
         try:
             buffer = io.BytesIO()
             try:
@@ -885,10 +965,8 @@ def page_shift_creation():
             with st.spinner(f"{target_year}年{target_month}月のドラフトを作成中..."):
                 df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
                 df_request = fetch_data("希望入力", COLS_REQUEST)
-                df_task = fetch_data("業務マスタ", COLS_TASK_MASTER)
                 
                 staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
-                task_abbrs = df_task["略語"].tolist() if not df_task.empty else []
                 
                 # 希望休の抽出（日をキーにした×スタッフのリストを作成）
                 req_dict = {}
@@ -904,6 +982,17 @@ def page_shift_creation():
                 _, num_days = calendar.monthrange(target_year, target_month)
                 draft_data = []
                 
+                # 均等化アルゴリズム用：スタッフごとの各業務カウントを保持
+                staff_task_counts = {s: {} for s in staff_list}
+                
+                def get_count(staff, task):
+                    return staff_task_counts.get(staff, {}).get(task, 0)
+                    
+                def increment_count(staff, task):
+                    if staff not in staff_task_counts:
+                        staff_task_counts[staff] = {}
+                    staff_task_counts[staff][task] = staff_task_counts[staff].get(task, 0) + 1
+                
                 # 1日から月末までループ処理
                 for d in range(1, num_days + 1):
                     dt = datetime.date(target_year, target_month, d)
@@ -914,34 +1003,41 @@ def page_shift_creation():
                     is_new_year = (dt.month == 12 and dt.day >= 29) or (dt.month == 1 and dt.day <= 3)
                     is_off_day = is_weekend or is_holiday or is_new_year
                     
-                    # 本日の必要業務枠を計算
+                    # 曜日・休日ごとの必要業務ルール
                     required_tasks = []
                     if is_off_day:
-                        required_tasks = ["ME業務"] # 休日などはME業務1名のみ
+                        # 土日祝・年末年始
+                        required_tasks = ["日勤", "宿直"]
                     else:
-                        base_tasks = [t for t in task_abbrs if t not in ["ヘルツ", "アブレーション"]]
-                        required_tasks.extend(base_tasks)
-                        if dt.weekday() in [0, 3]: # 月・木
-                            required_tasks.extend(["ヘルツ", "ヘルツ"])
-                        if dt.weekday() == 3: # 木
-                            required_tasks.extend(["アブレーション", "アブレーション"])
+                        # 平日ベース
+                        required_tasks = ["カ", "Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ", "宿直"]
+                        if dt.weekday() == 0: # 月曜日
+                            required_tasks.extend(["ＨＭ", "Ｈサ"])
+                        elif dt.weekday() == 3: # 木曜日
+                            required_tasks.extend(["ＨＭ", "Ｈサ", "Ａ", "Ａ"])
                             
                     # 本日出勤可能なスタッフ
                     unavailable = req_dict.get(d_str, [])
                     available_staff = [s for s in staff_list if s not in unavailable]
                     
-                    random.shuffle(available_staff)
-                    
-                    assigned_count = 0
+                    # 業務ごとに均等に割り当てる
+                    dummy_counter = 0
                     for task in required_tasks:
-                        if assigned_count < len(available_staff):
-                            assigned_staff = available_staff[assigned_count]
+                        if available_staff:
+                            # 割り当て回数が同じ人がいる場合にランダムになるようシャッフル
+                            random.shuffle(available_staff)
+                            # これまでの該当業務の割り当て回数が少ない順にソート（昇順）
+                            available_staff.sort(key=lambda s: get_count(s, task))
+                            
+                            # 最も回数が少ないスタッフをアサイン
+                            assigned_staff = available_staff.pop(0)
+                            increment_count(assigned_staff, task)
                         else:
-                            dummy_idx = assigned_count - len(available_staff)
-                            assigned_staff = f"スタッフ{chr(65 + dummy_idx)}"
-                        
+                            # スタッフが枯渇した場合はダミー
+                            assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
+                            dummy_counter += 1
+                            
                         draft_data.append([d_str, assigned_staff, task])
-                        assigned_count += 1
                         
                 if draft_data:
                     # 既存の確定勤務表データを取得し、該当月のデータを洗い替えする
