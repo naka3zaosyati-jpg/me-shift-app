@@ -239,6 +239,7 @@ COLS_OPE_MASTER = ["術式名", "術式レベル"]
 COLS_OPE_SCHEDULE = ["日時", "術式"]
 COLS_TASK_MASTER = ["略語", "業務名"]
 COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
+COLS_PROFICIENCY_MASTER = ["区分", "ランク", "定義"]
 
 # --- ページUI コンポーネント ---
 
@@ -502,7 +503,7 @@ def page_home():
 
 def page_schedule_task():
     st.markdown('<div class="card"><h2>② 予定・マスタ管理</h2><p>術式予定、希望休入力、各種マスタの管理を行います。</p></div>', unsafe_allow_html=True)
-    tab1, tab2, tab3, tab4 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理", "術式マスタ管理"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理", "術式マスタ管理", "習熟度マスタ確認"])
     
     with tab1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -603,9 +604,35 @@ def page_schedule_task():
         st.write("### 術式マスタ一覧")
         st.dataframe(fetch_data("術式マスタ", COLS_OPE_MASTER), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
+        
+    with tab5:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.write("### 習熟度マスタ一覧")
+        st.info("※ このマスタの追加・編集はスプレッドシートから直接行ってください。")
+        st.dataframe(fetch_data("習熟度マスタ", COLS_PROFICIENCY_MASTER), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
 def page_staff():
     st.markdown('<div class="card"><h2>③ スタッフマスタ管理</h2><p>スタッフの基本情報や各分野の習熟度を管理します。</p></div>', unsafe_allow_html=True)
+    
+    # 習熟度マスタデータの取得
+    df_prof = fetch_data("習熟度マスタ", COLS_PROFICIENCY_MASTER)
+    ope_options = ["A", "B", "C", "D"] # デフォルト
+    angio_options = ["1", "2", "3", "4"] # デフォルト
+    ope_defs = ""
+    angio_defs = ""
+    
+    if not df_prof.empty:
+        df_ope_prof = df_prof[df_prof["区分"] == "OPE"]
+        if not df_ope_prof.empty:
+            ope_options = df_ope_prof["ランク"].astype(str).tolist()
+            ope_defs = "\n".join([f"- **{r['ランク']}**: {r['定義']}" for _, r in df_ope_prof.iterrows()])
+            
+        df_angio_prof = df_prof[df_prof["区分"] == "アンギオ"]
+        if not df_angio_prof.empty:
+            angio_options = df_angio_prof["ランク"].astype(str).tolist()
+            angio_defs = "\n".join([f"- **{r['ランク']}**: {r['定義']}" for _, r in df_angio_prof.iterrows()])
+
     st.markdown('<div class="card">', unsafe_allow_html=True)
     tab1, tab2 = st.tabs(["新規登録", "情報更新"])
     
@@ -618,8 +645,12 @@ def page_staff():
                 staff_role = st.selectbox("役職", ["技士長", "副技士長", "主任", "一般", "新人"])
                 employment_type = st.selectbox("雇用形態", ["常勤", "非常勤"])
             with col2:
-                ope_level = st.selectbox("OPE習熟度", ["A", "B", "C", "D"])
-                angio_level = st.selectbox("アンギオ習熟度", ["1", "2", "3", "4"])
+                ope_level = st.selectbox("OPE習熟度", ope_options)
+                if ope_defs: st.caption("【OPE習熟度の定義】\n" + ope_defs)
+                
+                angio_level = st.selectbox("アンギオ習熟度", angio_options)
+                if angio_defs: st.caption("【アンギオ習熟度の定義】\n" + angio_defs)
+                
             st.markdown("---")
             st.write("#### 経験回数・実績")
             col3, col4 = st.columns(2)
@@ -630,13 +661,11 @@ def page_staff():
                 ablation_count = st.number_input("アブレーション回数", min_value=0, step=1)
                 catha_count = st.number_input("カテ回数", min_value=0, step=1)
                 
-            total_code = f"{ope_level}-{angio_level}"
-            st.info(f"💡 OPE・アンギオ習熟度から生成される総合コード: **{total_code}**")
-            
             if st.form_submit_button("スタッフ登録"):
+                total_code = f"{ope_level}-{angio_level}"
                 row = [staff_name, staff_role, ope_level, angio_level, total_code, int(cpb_main), int(cpb_sub), int(ablation_count), int(catha_count), employment_type]
                 res = append_data("スタッフマスタ", row)
-                if res: st.success(f"スプレッドシートに「{staff_name}」さんのデータを新規登録しました。")
+                if res: st.success(f"スプレッドシートに「{staff_name}」さんのデータを新規登録しました。（総合コード: {total_code}）")
                     
     with tab2:
         st.write("### 登録済みスタッフの情報更新")
@@ -659,12 +688,13 @@ def page_staff():
                     e_idx = emp_options.index(curr_emp) if curr_emp in emp_options else 0
                     employment_type_upd = st.selectbox("雇用形態", emp_options, index=e_idx)
                 with col2:
-                    ope_options = ["A", "B", "C", "D"]
                     o_idx = ope_options.index(curr["OPE習熟度"]) if curr["OPE習熟度"] in ope_options else 0
                     ope_level_upd = st.selectbox("OPE習熟度", ope_options, index=o_idx)
-                    angio_options = ["1", "2", "3", "4"]
+                    if ope_defs: st.caption("【OPE習熟度の定義】\n" + ope_defs)
+                    
                     a_idx = angio_options.index(str(curr["アンギオ習熟度"])) if str(curr["アンギオ習熟度"]) in angio_options else 0
                     angio_level_upd = st.selectbox("アンギオ習熟度", angio_options, index=a_idx)
+                    if angio_defs: st.caption("【アンギオ習熟度の定義】\n" + angio_defs)
                 
                 st.markdown("---")
                 st.write("#### 経験回数・実績")
@@ -676,13 +706,11 @@ def page_staff():
                     ablation_upd = st.number_input("アブレーション回数", min_value=0, step=1, value=safe_int(curr["アブレーション回数"]))
                     catha_upd = st.number_input("カテ回数", min_value=0, step=1, value=safe_int(curr["カテ回数"]))
                     
-                total_code_upd = f"{ope_level_upd}-{angio_level_upd}"
-                st.info(f"💡 新しい総合コード: **{total_code_upd}**")
-                
                 if st.form_submit_button("情報を更新"):
+                    total_code_upd = f"{ope_level_upd}-{angio_level_upd}"
                     row_upd = [staff_name_upd, staff_role_upd, ope_level_upd, angio_level_upd, total_code_upd, int(cpb_main_upd), int(cpb_sub_upd), int(ablation_upd), int(catha_upd), employment_type_upd]
                     res = update_data("スタッフマスタ", 1, staff_name_upd, row_upd)
-                    if res: st.success(f"スプレッドシートの「{staff_name_upd}」さんの情報を上書き更新しました。")
+                    if res: st.success(f"「{staff_name_upd}」さんの情報を上書き更新しました。（新しい総合コード: {total_code_upd}）")
         else: st.info("登録されているスタッフがいません。")
             
     st.markdown('</div>', unsafe_allow_html=True)
@@ -717,10 +745,15 @@ def page_shift_creation():
                 staff_list = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
                 
                 part_time_staff = []
+                staff_ope_dict = {}
                 if "雇用形態" in df_staff.columns:
                     df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.strip()
                     df_staff["氏名"] = df_staff["氏名"].astype(str).str.strip()
                     part_time_staff = df_staff[df_staff["雇用形態"] == "非常勤"]["氏名"].tolist()
+                
+                if not df_staff.empty:
+                    for _, row in df_staff.iterrows():
+                        staff_ope_dict[str(row["氏名"]).strip()] = str(row["OPE習熟度"]).strip()
                 
                 # 休みの人（×不可、年休希望）と、宿直希望（△）の人を分ける
                 req_unavailable = {}
@@ -826,6 +859,13 @@ def page_shift_creation():
                         assigned_staff = None
                         if available_staff:
                             candidates_for_task = available_staff.copy()
+                            
+                            # 【追加ロジック】ＨＭ・Ｈサは OPE習熟度 A, B, C のみに限定
+                            if task in ["ＨＭ", "Ｈサ"]:
+                                valid_hm_candidates = [s for s in candidates_for_task if staff_ope_dict.get(s, "") in ["A", "B", "C"]]
+                                # 該当者がいれば候補を絞り込む。誰もいなければ緩和（元のまま）
+                                if valid_hm_candidates:
+                                    candidates_for_task = valid_hm_candidates
                             
                             # 休日（is_off_day）の「日勤」を決める場合
                             if is_off_day and task == "日勤":
