@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+# pyrefly: ignore [missing-import]
 import gspread
 from google.oauth2.service_account import Credentials
 import datetime
@@ -67,7 +68,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Google Sheets API 接続 ---
-@st.cache_resource
+# ※ @st.cache_resource を外しています。
+# 以前のエラー状態（None）がキャッシュされ続け、設定を直しても「DB未接続」から
+# 復帰しなくなる現象を防ぐためです。認証処理自体は軽量なので毎回実行でも問題ありません。
 def get_gspread_client():
     """
     gspreadクライアントと、エラー発生時のメッセージを返す
@@ -79,7 +82,6 @@ def get_gspread_client():
                 "https://www.googleapis.com/auth/spreadsheets",
                 "https://www.googleapis.com/auth/drive"
             ]
-            # st.secrets の内容を辞書型に変換して渡す（一部環境でのエラー防止）
             info = dict(st.secrets["gcp_service_account"])
             credentials = Credentials.from_service_account_info(
                 info,
@@ -97,7 +99,6 @@ def get_sheet(sheet_name):
     if not client:
         return None
     try:
-        # スプレッドシートIDを読み込み
         if "spreadsheet_id" in st.secrets:
             sheet_id = st.secrets["spreadsheet_id"]
         else:
@@ -106,8 +107,7 @@ def get_sheet(sheet_name):
         spreadsheet = client.open_by_key(sheet_id)
         return spreadsheet.worksheet(sheet_name)
     except Exception as e:
-        # データ取得時のエラーも表示させる場合はここに出力
-        st.error(f"シート「{sheet_name}」の取得に失敗しました: {e}")
+        st.error(f"シート「{sheet_name}」の取得に失敗しました。\nシート名がスプレッドシート内に存在するか確認してください。\n詳細: {e}")
         return None
 
 # --- CRUD ラッパー関数 ---
@@ -124,19 +124,22 @@ def fetch_data(sheet_name, expected_columns):
             st.error(f"シート「{sheet_name}」のデータ読み込みエラー: {e}")
             return pd.DataFrame(columns=expected_columns)
     else:
-        # API未設定時のプロトタイプ用モックデータ
+        # API未設定、またはシートが存在しない時用のモックデータ
         return pd.DataFrame(columns=expected_columns)
 
 def append_data(sheet_name, row_data):
     sheet = get_sheet(sheet_name)
     if sheet:
         try:
+            # データの追記を実行
             sheet.append_row(row_data)
             return True
         except Exception as e:
             st.error(f"シート「{sheet_name}」への書き込みエラー: {e}")
             return False
-    return False
+    else:
+        st.error(f"シート「{sheet_name}」が見つからないか、DBに接続されていません。")
+        return False
 
 # --- カラム定義（スプレッドシートの列名） ---
 COLS_STAFF = ["氏名", "役職", "OPE習熟度", "アンギオ習熟度", "総合コード", "人工心肺メイン回数", "人工心肺サブ回数", "アブレーション回数", "カテ回数"]
@@ -151,7 +154,6 @@ COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
 def page_home():
     st.markdown('<div class="card"><h2>① ホーム（確定勤務表の確認）</h2><p>確定した勤務表や本日のシフト、術式予定を確認します。</p></div>', unsafe_allow_html=True)
     
-    # データ取得
     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
     df_ope = fetch_data("術式予定", COLS_OPE_SCHEDULE)
     
@@ -160,12 +162,10 @@ def page_home():
     with col1:
         date_filter = st.date_input("表示日を選択", datetime.date.today())
     
-    # 選択した日付でフィルタリング (データが文字列で入っている前提)
     date_str = str(date_filter)
     
     st.write("### 📅 確定勤務表")
     if not df_shift.empty:
-        # 簡易的な日付フィルター
         filtered_shift = df_shift[df_shift["日時"].astype(str).str.contains(date_str)]
         if not filtered_shift.empty:
             st.dataframe(filtered_shift, use_container_width=True)
@@ -175,7 +175,6 @@ def page_home():
         st.info("確定された勤務表データがありません。")
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # 新機能1: 術式予定の表示
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### 🏥 本日の術式予定")
     if not df_ope.empty:
@@ -188,12 +187,10 @@ def page_home():
         st.info("術式予定データがありません。")
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # 新機能2: 業務割り当て総合回数（集計表）
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### 📊 業務割り当て総合回数（集計表）")
     if not df_shift.empty:
         try:
-            # 氏名×割り当て業務でクロス集計
             summary_df = pd.pivot_table(
                 df_shift, 
                 index="氏名", 
@@ -201,10 +198,7 @@ def page_home():
                 aggfunc="size", 
                 fill_value=0
             )
-            # 各スタッフの合計割り当て回数を追加
             summary_df["合計"] = summary_df.sum(axis=1)
-            
-            # 見やすく表示
             st.dataframe(summary_df, use_container_width=True)
         except Exception as e:
             st.warning(f"集計処理中にエラーが発生しました: {e}")
@@ -221,7 +215,8 @@ def page_schedule_task():
     with tab1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 術式予定の登録")
-        with st.form("schedule_form"):
+        # clear_on_submit=True で登録成功時に入力欄をリセット
+        with st.form("schedule_form", clear_on_submit=True):
             sched_date = st.date_input("手術日時")
             
             df_ope_master = fetch_data("術式マスタ", COLS_OPE_MASTER)
@@ -233,7 +228,7 @@ def page_schedule_task():
                 if append_data("術式予定", [str(sched_date), sched_ope]):
                     st.success("予定を追加しました。")
                 else:
-                    st.warning("予定追加をシミュレートしました。")
+                    st.error("予定の追加に失敗しました。")
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -244,7 +239,7 @@ def page_schedule_task():
     with tab2:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 希望休入力")
-        with st.form("request_form"):
+        with st.form("request_form", clear_on_submit=True):
             req_date = st.date_input("希望日時")
             
             df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
@@ -259,7 +254,7 @@ def page_schedule_task():
                 if append_data("希望入力", [str(req_date), req_name, val_type, req_comment]):
                     st.success("希望休を登録しました。")
                 else:
-                    st.warning("登録をシミュレートしました（API未接続）。")
+                    st.error("登録に失敗しました。")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -270,14 +265,14 @@ def page_schedule_task():
     with tab3:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 業務マスタ登録")
-        with st.form("task_form"):
+        with st.form("task_form", clear_on_submit=True):
             task_abbr = st.text_input("略語 (例: HM, A)")
             task_name = st.text_input("業務名 (例: 血液浄化, 血管造影)")
             if st.form_submit_button("マスタ追加"):
                 if append_data("業務マスタ", [task_abbr, task_name]):
                     st.success("業務マスタを追加しました。")
                 else:
-                    st.warning("追加をシミュレートしました。")
+                    st.error("登録に失敗しました。")
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -291,7 +286,8 @@ def page_staff():
     
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### 新規スタッフ登録 / 習熟度更新")
-    with st.form("staff_form"):
+    # clear_on_submit=True で登録成功後に入力フォームをリセットする
+    with st.form("staff_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
             staff_name = st.text_input("氏名")
@@ -310,9 +306,7 @@ def page_staff():
             ablation_count = st.number_input("アブレーション回数", min_value=0, step=1)
             catha_count = st.number_input("カテ回数", min_value=0, step=1)
             
-        # 総合コードの自動生成 (例: A-1)
         total_code = f"{ope_level}-{angio_level}"
-        
         st.info(f"💡 OPE・アンギオ習熟度から生成される総合コード: **{total_code}**")
         
         if st.form_submit_button("スタッフ登録"):
@@ -323,11 +317,12 @@ def page_staff():
             if append_data("スタッフマスタ", row):
                 st.success(f"{staff_name}さんを登録しました。")
             else:
-                st.warning("登録をシミュレートしました（API未接続）。")
+                st.error("登録に失敗しました。（DB未接続、またはシート名が間違っている可能性があります）")
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### スタッフ一覧")
+    # ここで fetch_data が呼ばれるため、上記 append_data が成功していればすぐに一覧に反映されます
     df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
     st.dataframe(df_staff, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -335,7 +330,6 @@ def page_staff():
 
 # --- メイン処理（サイドバー・ナビゲーション） ---
 def main():
-    # スマホでも見やすいようにサイドバーのタイトルを大きめに
     st.sidebar.markdown("<h2>🏥 ME勤務表管理</h2>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
     
@@ -359,7 +353,6 @@ def main():
         st.sidebar.error(f"エラー詳細:\n{error_msg}")
         st.sidebar.info("現在はプロトタイプ（UIデモ）として動作しています。")
     else:
-        # 認証は成功したので、スプレッドシートへのアクセスをテスト
         if "spreadsheet_id" not in st.secrets:
             st.sidebar.error("🔴 DB未接続 (ID未設定)")
             st.sidebar.error("エラー詳細:\nst.secrets に 'spreadsheet_id' が設定されていません。")
