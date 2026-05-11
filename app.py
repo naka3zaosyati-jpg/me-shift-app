@@ -12,56 +12,56 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- カスタムCSS（ダークモード＆ミニマルカードUI） ---
+# --- カスタムCSS（ライトモード＆カードUI） ---
 st.markdown("""
 <style>
-    /* 全体的なダークテーマと高コントラスト */
+    /* 全体的なライトテーマ */
     .stApp {
-        background-color: #121212;
-        color: #E0E0E0;
+        background-color: #F8F9FA;
+        color: #212529;
     }
     
-    /* 見出しの色を高コントラストなアクセントカラーに */
+    /* 見出しの色を明るいアクセントカラーに */
     h1, h2, h3 {
-        color: #BB86FC !important;
+        color: #0056B3 !important;
     }
     
-    /* カード型UIの定義 (スマホ操作を意識したミニマルデザイン) */
+    /* カード型UIの定義 (ライトモード用、影を柔らかく) */
     .card {
-        background-color: #1E1E1E;
+        background-color: #FFFFFF;
         padding: 1.5rem;
-        border-radius: 16px;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
-        border: 1px solid #333333;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        border: 1px solid #E9ECEF;
         margin-bottom: 1.5rem;
     }
     
-    /* ボタンのスタイル (タップしやすいサイズ) */
+    /* ボタンのスタイル */
     .stButton>button {
-        background-color: #03DAC6;
-        color: #000000;
+        background-color: #007BFF;
+        color: #FFFFFF;
         font-weight: bold;
-        border-radius: 12px;
+        border-radius: 8px;
         border: none;
         width: 100%;
-        padding: 0.75rem;
+        padding: 0.6rem;
         transition: all 0.2s;
     }
     .stButton>button:hover {
-        background-color: #00E676;
-        color: #000000;
+        background-color: #0056B3;
+        color: #FFFFFF;
         transform: translateY(-2px);
     }
 
     /* データフレーム（表）のヘッダー色 */
     th {
-        background-color: #2D2D2D !important;
-        color: #BB86FC !important;
+        background-color: #F1F3F5 !important;
+        color: #495057 !important;
     }
     
-    /* モバイル向けに入力フィールド等を調整 */
+    /* モバイル向けに入力フィールド等を角丸に調整 */
     input, select, textarea {
-        border-radius: 8px !important;
+        border-radius: 6px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -92,14 +92,12 @@ def get_sheet(sheet_name):
     if not client:
         return None
     try:
-        # スプレッドシートIDをsecretsから取得
         sheet_id = st.secrets.get("spreadsheet_id", "")
         if not sheet_id:
             return None
         spreadsheet = client.open_by_key(sheet_id)
         return spreadsheet.worksheet(sheet_name)
     except Exception as e:
-        # シートが存在しない場合などはNoneを返す
         return None
 
 # --- CRUD ラッパー関数 ---
@@ -125,61 +123,82 @@ def append_data(sheet_name, row_data):
 # --- カラム定義（スプレッドシートの列名） ---
 COLS_STAFF = ["氏名", "役職", "OPE習熟度", "アンギオ習熟度", "総合コード", "人工心肺メイン回数", "人工心肺サブ回数", "アブレーション回数", "カテ回数"]
 COLS_REQUEST = ["日時", "氏名", "区分", "コメント"]
-COLS_OPE_MASTER = ["術式名", "デフォルト必要レベル"]
-COLS_OPE_SCHEDULE = ["日時", "術式", "必要レベル"]
+COLS_OPE_MASTER = ["術式名", "術式レベル"]
+COLS_OPE_SCHEDULE = ["日時", "術式"]
 COLS_TASK_MASTER = ["略語", "業務名"]
-COLS_SHIFT = ["日時", "氏名", "割当業務"]
+COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
 
 # --- ページUI コンポーネント ---
 
 def page_home():
-    st.markdown('<div class="card"><h2>① ホーム（シフト確認）</h2><p>確定した勤務表や本日のシフトを確認します。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h2>① ホーム（確定勤務表の確認）</h2><p>確定した勤務表や本日のシフト、術式予定を確認します。</p></div>', unsafe_allow_html=True)
+    
+    # データ取得
+    df_shift = fetch_data("確定勤務表", COLS_SHIFT)
+    df_ope = fetch_data("術式予定", COLS_OPE_SCHEDULE)
     
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.write("### 確定勤務表")
-    df_shift = fetch_data("確定勤務表", COLS_SHIFT)
-    
-    if not df_shift.empty:
+    col1, col2 = st.columns([1, 3])
+    with col1:
         date_filter = st.date_input("表示日を選択", datetime.date.today())
-        st.dataframe(df_shift, use_container_width=True)
+    
+    # 選択した日付でフィルタリング (データが文字列で入っている前提)
+    date_str = str(date_filter)
+    
+    st.write("### 📅 確定勤務表")
+    if not df_shift.empty:
+        # 簡易的な日付フィルター
+        filtered_shift = df_shift[df_shift["日時"].astype(str).str.contains(date_str)]
+        if not filtered_shift.empty:
+            st.dataframe(filtered_shift, use_container_width=True)
+        else:
+            st.info(f"{date_str} の勤務表データがありません。")
     else:
         st.info("確定された勤務表データがありません。")
     st.markdown('</div>', unsafe_allow_html=True)
-
-
-def page_request():
-    st.markdown('<div class="card"><h2>② 希望休入力</h2><p>休みの希望（×、△）を入力します。</p></div>', unsafe_allow_html=True)
     
+    # 新機能1: 術式予定の表示
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    with st.form("request_form"):
-        req_date = st.date_input("希望日時")
-        
-        # スタッフリストを取得（未接続時はモック名）
-        df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
-        staff_names = df_staff["氏名"].tolist() if not df_staff.empty else ["テスト太郎", "テスト花子"]
-        
-        req_name = st.selectbox("氏名", staff_names)
-        req_type = st.radio("区分", ["× (不可)", "△ (要相談)"])
-        req_comment = st.text_input("コメント")
-        
-        if st.form_submit_button("希望休を登録"):
-            val_type = "×" if "×" in req_type else "△"
-            if append_data("希望入力", [str(req_date), req_name, val_type, req_comment]):
-                st.success("希望休を登録しました。")
-            else:
-                st.warning("登録をシミュレートしました（API未接続）。")
+    st.write("### 🏥 本日の術式予定")
+    if not df_ope.empty:
+        filtered_ope = df_ope[df_ope["日時"].astype(str).str.contains(date_str)]
+        if not filtered_ope.empty:
+            st.dataframe(filtered_ope, use_container_width=True)
+        else:
+            st.info(f"{date_str} の術式予定はありません。")
+    else:
+        st.info("術式予定データがありません。")
     st.markdown('</div>', unsafe_allow_html=True)
-
+    
+    # 新機能2: 業務割り当て総合回数（集計表）
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.write("### 登録済み希望一覧")
-    st.dataframe(fetch_data("希望入力", COLS_REQUEST), use_container_width=True)
+    st.write("### 📊 業務割り当て総合回数（集計表）")
+    if not df_shift.empty:
+        try:
+            # 氏名×割り当て業務でクロス集計
+            summary_df = pd.pivot_table(
+                df_shift, 
+                index="氏名", 
+                columns="割り当て業務", 
+                aggfunc="size", 
+                fill_value=0
+            )
+            # 各スタッフの合計割り当て回数を追加
+            summary_df["合計"] = summary_df.sum(axis=1)
+            
+            # 見やすく表示
+            st.dataframe(summary_df, use_container_width=True)
+        except Exception as e:
+            st.warning(f"集計処理中にエラーが発生しました: {e}")
+    else:
+        st.info("集計する勤務表データがありません。")
     st.markdown('</div>', unsafe_allow_html=True)
 
 
 def page_schedule_task():
-    st.markdown('<div class="card"><h2>③ 予定・業務管理</h2><p>術式の予定入力および業務マスタの管理を行います。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h2>② 予定・業務管理</h2><p>術式予定、希望入力の確認・追加、および業務マスタの管理を行います。</p></div>', unsafe_allow_html=True)
     
-    tab1, tab2 = st.tabs(["術式予定", "業務マスタ管理"])
+    tab1, tab2, tab3 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理"])
     
     with tab1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -191,21 +210,46 @@ def page_schedule_task():
             ope_names = df_ope_master["術式名"].tolist() if not df_ope_master.empty else ["CABG", "AVR", "PCI", "アブレーション"]
             
             sched_ope = st.selectbox("術式", ope_names)
-            sched_level = st.selectbox("必要レベル", ["A", "B", "C", "D"])
             
             if st.form_submit_button("予定追加"):
-                if append_data("術式予定", [str(sched_date), sched_ope, sched_level]):
+                if append_data("術式予定", [str(sched_date), sched_ope]):
                     st.success("予定を追加しました。")
                 else:
                     st.warning("予定追加をシミュレートしました。")
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.write("### 登録済み予定")
+        st.write("### 登録済み予定一覧")
         st.dataframe(fetch_data("術式予定", COLS_OPE_SCHEDULE), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.write("### 希望休入力")
+        with st.form("request_form"):
+            req_date = st.date_input("希望日時")
+            
+            df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
+            staff_names = df_staff["氏名"].tolist() if not df_staff.empty else ["テスト太郎", "テスト花子"]
+            
+            req_name = st.selectbox("氏名", staff_names)
+            req_type = st.radio("区分", ["× (不可)", "△ (要相談)"])
+            req_comment = st.text_input("コメント")
+            
+            if st.form_submit_button("希望休を登録"):
+                val_type = "×" if "×" in req_type else "△"
+                if append_data("希望入力", [str(req_date), req_name, val_type, req_comment]):
+                    st.success("希望休を登録しました。")
+                else:
+                    st.warning("登録をシミュレートしました（API未接続）。")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.write("### 登録済み希望一覧")
+        st.dataframe(fetch_data("希望入力", COLS_REQUEST), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with tab3:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 業務マスタ登録")
         with st.form("task_form"):
@@ -225,7 +269,7 @@ def page_schedule_task():
 
 
 def page_staff():
-    st.markdown('<div class="card"><h2>④ スタッフマスタ</h2><p>スタッフの基本情報や各分野の習熟度を管理します。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h2>③ スタッフマスタ管理</h2><p>スタッフの基本情報や各分野の習熟度を管理します。</p></div>', unsafe_allow_html=True)
     
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### 新規スタッフ登録 / 習熟度更新")
@@ -278,10 +322,9 @@ def main():
     st.sidebar.markdown("---")
     
     pages = {
-        "① ホーム（シフト確認）": page_home,
-        "② 希望休入力": page_request,
-        "③ 予定・業務管理": page_schedule_task,
-        "④ スタッフマスタ": page_staff
+        "① ホーム（確定勤務表の確認）": page_home,
+        "② 予定・業務管理": page_schedule_task,
+        "③ スタッフマスタ管理": page_staff
     }
     
     selection = st.sidebar.radio("メニュー", list(pages.keys()))
