@@ -240,6 +240,38 @@ def update_data(sheet_name, search_col_index, search_value, row_data):
         st.error(f"シート「{sheet_name}」の更新処理で予期せぬエラーが発生しました。\n詳細: {e}")
         return False
 
+def overwrite_data(sheet_name, df, columns):
+    """
+    シートの内容をクリアし、DataFrameの内容で全体を上書きする。（洗い替え保存用）
+    """
+    client, _ = get_gspread_client()
+    if not client:
+        st.error(f"DB未接続のため、シート「{sheet_name}」の上書きができません。")
+        return False
+    try:
+        sheet_id = st.secrets.get("spreadsheet_id", "")
+        spreadsheet = client.open_by_key(sheet_id)
+        sheet = spreadsheet.worksheet(sheet_name)
+        
+        sheet.clear()
+        
+        # 欠損値を空文字に置換
+        df = df.fillna("")
+        
+        # ヘッダーとデータを結合
+        data = [columns] + df[columns].values.tolist()
+        
+        try:
+            res = sheet.update(range_name="A1", values=data, value_input_option="USER_ENTERED")
+        except TypeError:
+            res = sheet.update("A1", data, value_input_option="USER_ENTERED")
+            
+        st.cache_data.clear()
+        return res
+    except Exception as e:
+        st.error(f"シート「{sheet_name}」の上書き処理でエラーが発生しました。\n詳細: {e}")
+        return False
+
 # --- カラム定義（スプレッドシートの列名） ---
 COLS_STAFF = ["氏名", "役職", "OPE習熟度", "アンギオ習熟度", "総合コード", "人工心肺メイン回数", "人工心肺サブ回数", "アブレーション回数", "カテ回数"]
 COLS_REQUEST = ["日時", "氏名", "区分", "コメント"]
@@ -564,7 +596,7 @@ def page_home():
 def page_schedule_task():
     st.markdown('<div class="card"><h2>② 予定・マスタ・自動ドラフト管理</h2><p>術式予定、希望休入力、各種マスタの管理、およびシフト自動生成を行います。</p></div>', unsafe_allow_html=True)
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理", "術式マスタ管理", "✨ 自動シフト作成"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理", "術式マスタ管理", "✨ 日別シフト作成"])
     
     with tab1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -698,95 +730,106 @@ def page_schedule_task():
 
     with tab5:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.write("### ✨ シフト自動割り当て（ドラフト作成）")
-        st.info("※実行すると、ルールと希望休に基づき業務を自動で割り当て、確定勤務表へ追記します。\n既に同月のデータがある場合は二重登録されるため、必要に応じてスプレッドシート上の古いデータを削除してから実行してください。")
+        st.write("### ✨ 日別シフト自動割り当て（ドラフト作成）")
+        st.info("日付を選択してドラフトを作成後、画面上で微調整し、「確定して保存」ボタンでスプレッドシートに反映します。\n※既にその日のデータがある場合、確定時に「洗い替え（上書き）」されます。")
         
-        with st.form("auto_shift_form"):
-            col1, col2 = st.columns(2)
-            today = datetime.date.today()
-            with col1:
-                target_year = st.number_input("対象年", min_value=2020, max_value=2050, value=today.year, step=1)
-            with col2:
-                target_month = st.number_input("対象月", min_value=1, max_value=12, value=today.month, step=1)
+        target_date = st.date_input("対象日を選択", value=datetime.date.today())
+        
+        if st.button("ドラフトを作成する"):
+            with st.spinner("ドラフトを作成中..."):
+                df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
+                df_request = fetch_data("希望入力", COLS_REQUEST)
+                df_task = fetch_data("業務マスタ", COLS_TASK_MASTER)
                 
-            if st.form_submit_button("シフトドラフトを生成して書き込む"):
-                with st.spinner("ドラフトを作成中..."):
-                    df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
-                    df_request = fetch_data("希望入力", COLS_REQUEST)
-                    df_task = fetch_data("業務マスタ", COLS_TASK_MASTER)
-                    
-                    staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
-                    task_abbrs = df_task["略語"].tolist() if not df_task.empty else []
-                    
-                    # 希望休の抽出（日をキーにした×スタッフのリストを作成）
-                    req_dict = {}
-                    if not df_request.empty:
-                        for _, row in df_request.iterrows():
-                            # 区分が '×' を含むもの（不可）を抽出
-                            if "×" in str(row["区分"]):
-                                r_date = parse_date(row["日時"])
-                                if r_date:
-                                    if r_date not in req_dict:
-                                        req_dict[r_date] = []
-                                    req_dict[r_date].append(str(row["氏名"]))
-                                    
-                    _, num_days = calendar.monthrange(target_year, target_month)
-                    draft_data = []
-                    
-                    # 1日から月末までループ処理
-                    for d in range(1, num_days + 1):
-                        dt = datetime.date(target_year, target_month, d)
-                        d_str = dt.strftime("%Y-%m-%d")
-                        
-                        # 休日・特別期間の判定
-                        is_weekend = dt.weekday() >= 5
-                        is_holiday = jpholiday.is_holiday(dt)
-                        is_new_year = (dt.month == 12 and dt.day >= 29) or (dt.month == 1 and dt.day <= 3)
-                        is_off_day = is_weekend or is_holiday or is_new_year
-                        
-                        # 本日の必要業務枠を計算
-                        required_tasks = []
-                        if is_off_day:
-                            required_tasks = ["ME業務"] # 休日などはME業務1名のみ
-                        else:
-                            # 平日の場合：業務マスタに登録されている略語を各1名ずつ
-                            base_tasks = [t for t in task_abbrs if t not in ["ヘルツ", "アブレーション"]]
-                            required_tasks.extend(base_tasks)
-                            
-                            # 特定の曜日の追加枠
-                            if dt.weekday() in [0, 3]: # 月曜・木曜
-                                required_tasks.extend(["ヘルツ", "ヘルツ"]) # 各2名
-                            if dt.weekday() == 3: # 木曜
-                                required_tasks.extend(["アブレーション", "アブレーション"]) # 各2名
+                staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
+                task_abbrs = df_task["略語"].tolist() if not df_task.empty else []
+                
+                d_str = target_date.strftime("%Y-%m-%d")
+                
+                # 希望休の抽出（対象日の「×」のスタッフ）
+                unavailable = []
+                if not df_request.empty:
+                    for _, row in df_request.iterrows():
+                        if "×" in str(row["区分"]):
+                            if parse_date(row["日時"]) == d_str:
+                                unavailable.append(str(row["氏名"]))
                                 
-                        # 本日出勤可能なスタッフ（希望休を出していない人）
-                        unavailable = req_dict.get(d_str, [])
-                        available_staff = [s for s in staff_list if s not in unavailable]
+                # 休日・特別期間の判定
+                is_weekend = target_date.weekday() >= 5
+                is_holiday = jpholiday.is_holiday(target_date)
+                is_new_year = (target_date.month == 12 and target_date.day >= 29) or (target_date.month == 1 and target_date.day <= 3)
+                is_off_day = is_weekend or is_holiday or is_new_year
+                
+                # 必要業務枠の算出
+                required_tasks = []
+                if is_off_day:
+                    required_tasks = ["ME業務"]
+                else:
+                    base_tasks = [t for t in task_abbrs if t not in ["ヘルツ", "アブレーション"]]
+                    required_tasks.extend(base_tasks)
+                    if target_date.weekday() in [0, 3]: # 月・木
+                        required_tasks.extend(["ヘルツ", "ヘルツ"])
+                    if target_date.weekday() == 3: # 木
+                        required_tasks.extend(["アブレーション", "アブレーション"])
                         
-                        # ランダムに割り当てるためにシャッフル
-                        random.shuffle(available_staff)
-                        
-                        # 枠に対して割り当てを実行
-                        assigned_count = 0
-                        for task in required_tasks:
-                            if assigned_count < len(available_staff):
-                                assigned_staff = available_staff[assigned_count]
-                            else:
-                                # 出勤可能スタッフが足りない場合はダミーを生成（スタッフA, スタッフB...）
-                                dummy_idx = assigned_count - len(available_staff)
-                                assigned_staff = f"スタッフ{chr(65 + dummy_idx)}"
-                            
-                            # ドラフトデータに追加 [日時, 氏名, 割り当て業務]
-                            draft_data.append([d_str, assigned_staff, task])
-                            assigned_count += 1
-                            
-                    # ドラフトデータをスプレッドシートへ一括書き込み
-                    if draft_data:
-                        res = append_rows_batch("確定勤務表", draft_data)
-                        if res:
-                            st.success(f"{target_year}年{target_month}月のドラフトを作成し、スプレッドシートへ追記しました！\nホーム画面のカレンダー・シフト表で確認してください。")
+                # 出勤可能スタッフ
+                available_staff = [s for s in staff_list if s not in unavailable]
+                random.shuffle(available_staff)
+                
+                # 割り当ての実行
+                draft_data = []
+                assigned_count = 0
+                for task in required_tasks:
+                    if assigned_count < len(available_staff):
+                        assigned_staff = available_staff[assigned_count]
                     else:
-                        st.warning("生成対象のデータがありませんでした。")
+                        dummy_idx = assigned_count - len(available_staff)
+                        assigned_staff = f"スタッフ{chr(65 + dummy_idx)}"
+                    
+                    draft_data.append({"日時": d_str, "氏名": assigned_staff, "割り当て業務": task})
+                    assigned_count += 1
+                
+                # セッションステートに保存
+                st.session_state["draft_df"] = pd.DataFrame(draft_data, columns=COLS_SHIFT)
+                st.session_state["target_date"] = target_date
+                
+        # ドラフトデータの編集と確定UI
+        if "draft_df" in st.session_state and st.session_state.get("target_date") == target_date:
+            st.markdown("---")
+            st.write(f"#### 📝 {target_date.strftime('%Y-%m-%d')} のドラフト編集")
+            st.caption("※表のセルをクリックして氏名や業務を直接修正できます。行の追加・削除も可能です。")
+            
+            # データエディタでインタラクティブに編集
+            edited_df = st.data_editor(
+                st.session_state["draft_df"],
+                num_rows="dynamic",
+                use_container_width=True,
+                key="shift_data_editor"
+            )
+            
+            if st.button("確定して保存"):
+                with st.spinner("スプレッドシートに保存中..."):
+                    # 現在の確定勤務表を全取得
+                    df_shift = fetch_data("確定勤務表", COLS_SHIFT)
+                    d_str = target_date.strftime("%Y-%m-%d")
+                    
+                    # 対象日の古いデータを削除 (洗い替え)
+                    if not df_shift.empty:
+                        df_shift["_date_str"] = df_shift["日時"].apply(parse_date)
+                        df_remain = df_shift[df_shift["_date_str"] != d_str].drop(columns=["_date_str"])
+                    else:
+                        df_remain = pd.DataFrame(columns=COLS_SHIFT)
+                        
+                    # 編集後のデータを結合
+                    df_new = pd.concat([df_remain, edited_df], ignore_index=True)
+                    
+                    # 確定勤務表を上書き保存
+                    res = overwrite_data("確定勤務表", df_new, COLS_SHIFT)
+                    
+                    if res:
+                        st.success(f"{d_str} の勤務データを確定し、スプレッドシートに保存しました！")
+                        # 完了後にセッションステートをクリアしてエディタを隠す
+                        del st.session_state["draft_df"]
                         
         st.markdown('</div>', unsafe_allow_html=True)
 
