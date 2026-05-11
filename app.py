@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-# pyrefly: ignore [missing-import]
 import gspread
 from google.oauth2.service_account import Credentials
 import datetime
@@ -68,9 +67,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Google Sheets API 接続 ---
-# ※ @st.cache_resource を外しています。
-# 以前のエラー状態（None）がキャッシュされ続け、設定を直しても「DB未接続」から
-# 復帰しなくなる現象を防ぐためです。認証処理自体は軽量なので毎回実行でも問題ありません。
 def get_gspread_client():
     """
     gspreadクライアントと、エラー発生時のメッセージを返す
@@ -94,51 +90,75 @@ def get_gspread_client():
     except Exception as e:
         return None, str(e)
 
-def get_sheet(sheet_name):
+
+# --- CRUD ラッパー関数 ---
+
+@st.cache_data(ttl=60)
+def _fetch_records_cached(sheet_name):
+    """
+    API呼び出しをキャッシュして高速化しつつ、更新時にクリアできるようにする内部関数
+    """
     client, _ = get_gspread_client()
     if not client:
         return None
     try:
-        if "spreadsheet_id" in st.secrets:
-            sheet_id = st.secrets["spreadsheet_id"]
-        else:
-            return None
-        
+        sheet_id = st.secrets.get("spreadsheet_id", "")
         spreadsheet = client.open_by_key(sheet_id)
-        return spreadsheet.worksheet(sheet_name)
+        sheet = spreadsheet.worksheet(sheet_name)
+        # スプレッドシートから全件取得
+        return sheet.get_all_records()
     except Exception as e:
-        st.error(f"シート「{sheet_name}」の取得に失敗しました。\nシート名がスプレッドシート内に存在するか確認してください。\n詳細: {e}")
+        st.error(f"データ取得エラー ({sheet_name}): {e}")
         return None
 
-# --- CRUD ラッパー関数 ---
 def fetch_data(sheet_name, expected_columns):
-    sheet = get_sheet(sheet_name)
-    if sheet:
-        try:
-            records = sheet.get_all_records()
-            if records:
-                return pd.DataFrame(records)
-            else:
-                return pd.DataFrame(columns=expected_columns)
-        except Exception as e:
-            st.error(f"シート「{sheet_name}」のデータ読み込みエラー: {e}")
+    """
+    キャッシュされたデータを取得し、DataFrameに整形する
+    """
+    records = _fetch_records_cached(sheet_name)
+    if records is not None:
+        if records:
+            df = pd.DataFrame(records)
+            # 空の行（すべてがNaNまたは空文字の行など）を削除して整形
+            df.dropna(how='all', inplace=True)
+            return df
+        else:
             return pd.DataFrame(columns=expected_columns)
     else:
-        # API未設定、またはシートが存在しない時用のモックデータ
         return pd.DataFrame(columns=expected_columns)
 
 def append_data(sheet_name, row_data):
-    sheet = get_sheet(sheet_name)
-    if sheet:
-        try:
-            # データの追記を実行
-            sheet.append_row(row_data)
-            return True
-        except Exception as e:
-            st.error(f"シート「{sheet_name}」への書き込みエラー: {e}")
-            return False
-    else:
-        st.error(f"シート「{sheet_name}」が見つからないか、DBに接続されていません。")
+    """
+    スプレッドシートへの直接書き込みとキャッシュクリアを実行する。
+    成功時はGoogle Sheets APIからのレスポンス(dict)を返し、失敗時はFalseを返す。
+    """
+    client, _ = get_gspread_client()
+    if not client:
+        st.error(f"DB未接続のため、シート「{sheet_name}」への書き込みができません。")
+        return False
+        
+    try:
+        sheet_id = st.secrets.get("spreadsheet_id", "")
+        spreadsheet = client.open_by_key(sheet_id)
+        sheet = spreadsheet.worksheet(sheet_name)
+        
+        # gspread の append_row を使って、スプレッドシートへ直接データを書き込む。
+        # 確実に表の直下を狙うために table_range="A1" を指定し、
+        # 空行による不具合を避けるために insert_data_option="INSERT_ROWS" を指定します。
+        res = sheet.append_row(
+            row_data, 
+            value_input_option="USER_ENTERED",
+            insert_data_option="INSERT_ROWS",
+            table_range="A1"
+        )
+        
+        # Streamlitのキャッシュをクリアし、次回 fetch_data 時に最新データを強制的に取得させる
+        st.cache_data.clear()
+        
+        return res
+    except Exception as e:
+        # 失敗時には具体的なエラー内容を try-except で拾って画面に出力
+        st.error(f"シート「{sheet_name}」への書き込みでエラーが発生しました。\n詳細: {e}")
         return False
 
 # --- カラム定義（スプレッドシートの列名） ---
@@ -215,7 +235,6 @@ def page_schedule_task():
     with tab1:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 術式予定の登録")
-        # clear_on_submit=True で登録成功時に入力欄をリセット
         with st.form("schedule_form", clear_on_submit=True):
             sched_date = st.date_input("手術日時")
             
@@ -225,10 +244,12 @@ def page_schedule_task():
             sched_ope = st.selectbox("術式", ope_names)
             
             if st.form_submit_button("予定追加"):
-                if append_data("術式予定", [str(sched_date), sched_ope]):
-                    st.success("予定を追加しました。")
-                else:
-                    st.error("予定の追加に失敗しました。")
+                try:
+                    res = append_data("術式予定", [str(sched_date), sched_ope])
+                    if res:
+                        st.success("スプレッドシートに予定を書き込みました。")
+                except Exception as e:
+                    st.error(f"予期せぬエラーが発生しました: {e}")
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -251,10 +272,12 @@ def page_schedule_task():
             
             if st.form_submit_button("希望休を登録"):
                 val_type = "×" if "×" in req_type else "△"
-                if append_data("希望入力", [str(req_date), req_name, val_type, req_comment]):
-                    st.success("希望休を登録しました。")
-                else:
-                    st.error("登録に失敗しました。")
+                try:
+                    res = append_data("希望入力", [str(req_date), req_name, val_type, req_comment])
+                    if res:
+                        st.success("スプレッドシートに希望休を書き込みました。")
+                except Exception as e:
+                    st.error(f"予期せぬエラーが発生しました: {e}")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -269,10 +292,12 @@ def page_schedule_task():
             task_abbr = st.text_input("略語 (例: HM, A)")
             task_name = st.text_input("業務名 (例: 血液浄化, 血管造影)")
             if st.form_submit_button("マスタ追加"):
-                if append_data("業務マスタ", [task_abbr, task_name]):
-                    st.success("業務マスタを追加しました。")
-                else:
-                    st.error("登録に失敗しました。")
+                try:
+                    res = append_data("業務マスタ", [task_abbr, task_name])
+                    if res:
+                        st.success("スプレッドシートに業務マスタを書き込みました。")
+                except Exception as e:
+                    st.error(f"予期せぬエラーが発生しました: {e}")
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -310,19 +335,37 @@ def page_staff():
         st.info(f"💡 OPE・アンギオ習熟度から生成される総合コード: **{total_code}**")
         
         if st.form_submit_button("スタッフ登録"):
+            # 要素数が9つ（スタッフマスタの列数）と完全に一致するリストを明示的に作成
             row = [
-                staff_name, staff_role, ope_level, angio_level, total_code, 
-                cpb_main, cpb_sub, ablation_count, catha_count
+                staff_name,         # 1: 氏名
+                staff_role,         # 2: 役職
+                ope_level,          # 3: OPE習熟度
+                angio_level,        # 4: アンギオ習熟度
+                total_code,         # 5: 総合コード
+                int(cpb_main),      # 6: 人工心肺メイン回数 (確実にint化)
+                int(cpb_sub),       # 7: 人工心肺サブ回数
+                int(ablation_count),# 8: アブレーション回数
+                int(catha_count)    # 9: カテ回数
             ]
-            if append_data("スタッフマスタ", row):
-                st.success(f"{staff_name}さんを登録しました。")
-            else:
-                st.error("登録に失敗しました。（DB未接続、またはシート名が間違っている可能性があります）")
+            
+            try:
+                # シート名を "スタッフマスタ" に完全指定して直接書き込み処理を実行
+                res = append_data("スタッフマスタ", row)
+                if res:
+                    st.success(f"スプレッドシートに「{staff_name}」さんのデータを直接書き込みました。")
+                    
+                    # 万が一見えない場所に書き込まれた場合のために、書き込み先の範囲をデバッグ表示
+                    if isinstance(res, dict) and "updates" in res:
+                        updated_range = res["updates"].get("updatedRange", "不明")
+                        st.info(f"【確認用】シートの以下の範囲にデータが追加されました: {updated_range}")
+            except Exception as e:
+                # 失敗時には try-except で拾ってエラー内容を出力
+                st.error(f"スタッフ登録の処理中に予期せぬエラーが発生しました。\n詳細: {e}")
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### スタッフ一覧")
-    # ここで fetch_data が呼ばれるため、上記 append_data が成功していればすぐに一覧に反映されます
+    # キャッシュクリアされているため、ここで最新データが取得され一覧に反映される
     df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
     st.dataframe(df_staff, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
