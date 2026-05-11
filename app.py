@@ -19,54 +19,13 @@ st.set_page_config(
 # --- カスタムCSS（ライトモード＆カードUI） ---
 st.markdown("""
 <style>
-    /* 全体的なライトテーマ */
-    .stApp {
-        background-color: #F8F9FA;
-        color: #212529;
-    }
-    
-    /* 見出しの色を明るいアクセントカラーに */
-    h1, h2, h3 {
-        color: #0056B3 !important;
-    }
-    
-    /* カード型UIの定義 (ライトモード用、影を柔らかく) */
-    .card {
-        background-color: #FFFFFF;
-        padding: 1.5rem;
-        border-radius: 12px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-        border: 1px solid #E9ECEF;
-        margin-bottom: 1.5rem;
-    }
-    
-    /* ボタンのスタイル */
-    .stButton>button {
-        background-color: #007BFF;
-        color: #FFFFFF;
-        font-weight: bold;
-        border-radius: 8px;
-        border: none;
-        width: 100%;
-        padding: 0.6rem;
-        transition: all 0.2s;
-    }
-    .stButton>button:hover {
-        background-color: #0056B3;
-        color: #FFFFFF;
-        transform: translateY(-2px);
-    }
-
-    /* データフレーム（表）のヘッダー色 */
-    th {
-        background-color: #F1F3F5 !important;
-        color: #495057 !important;
-    }
-    
-    /* モバイル向けに入力フィールド等を角丸に調整 */
-    input, select, textarea {
-        border-radius: 6px !important;
-    }
+    .stApp { background-color: #F8F9FA; color: #212529; }
+    h1, h2, h3 { color: #0056B3 !important; }
+    .card { background-color: #FFFFFF; padding: 1.5rem; border-radius: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); border: 1px solid #E9ECEF; margin-bottom: 1.5rem; }
+    .stButton>button { background-color: #007BFF; color: #FFFFFF; font-weight: bold; border-radius: 8px; border: none; width: 100%; padding: 0.6rem; transition: all 0.2s; }
+    .stButton>button:hover { background-color: #0056B3; color: #FFFFFF; transform: translateY(-2px); }
+    th { background-color: #F1F3F5 !important; color: #495057 !important; }
+    input, select, textarea { border-radius: 6px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,23 +41,18 @@ TASK_COLORS = {
     "Ｄ": {"bg": "#6C757D", "text": "white"},
     "Ｒ": {"bg": "#FFC0CB", "text": "black"},
     "宿直": {"bg": "transparent", "text": "#800080", "fw": "bold"},
-    "日勤": {"bg": "#FD7E14", "text": "white"}, # 休日用
+    "日勤": {"bg": "#FD7E14", "text": "white"},
 }
 
 def get_styled_task_html(text, is_calendar=False):
-    """
-    業務の略語に対して指定された色とバッジスタイルを適用するヘルパー関数。
-    is_calendar=True の場合は「山田太郎 (カ)」のような文字列を丸ごとバッジ化。
-    """
+    """カレンダー用HTMLバッジ生成"""
     if not text: return ""
     items = text.split('\n') if '\n' in text else text.split('<br>')
     res = []
     for item in items:
         item = item.strip()
         if not item: continue
-        
         matched_color = None
-        # 長いキーからマッチさせる
         for k, v in TASK_COLORS.items():
             if is_calendar:
                 if f"({k})" in item or f" {k} " in item or item.endswith(k) or k in item:
@@ -108,38 +62,50 @@ def get_styled_task_html(text, is_calendar=False):
                 if k == item or k in item:
                     matched_color = (k, v)
                     break
-                    
         if matched_color:
             k, v = matched_color
             bg = v.get("bg", "transparent")
             color = v.get("text", "inherit")
             fw = v.get("fw", "normal")
-            
             if k == "宿直":
                 res.append(f'<span style="color: {color}; font-weight: {fw};">{item}</span>')
             else:
-                # 視認性を高めるバッジスタイル
                 res.append(f'<span style="background-color: {bg}; color: {color}; font-weight: {fw}; padding: 3px 8px; border-radius: 6px; display: inline-block; margin-bottom: 2px; font-size: 0.85rem; box-shadow: 0 1px 2px rgba(0,0,0,0.1); width: fit-content;">{item}</span>')
         else:
             res.append(item)
-            
     return "<br>".join(res)
+
+def color_cells_pandas(val):
+    """Pandas Styler 用のセルカラー判定"""
+    if not isinstance(val, str) or not val:
+        return ""
+    matched_bg = "transparent"
+    matched_color = "inherit"
+    matched_fw = "normal"
+    
+    # 複数マッチする場合は最初のタスク（もしくは宿直）のスタイルを適用
+    for k, v in TASK_COLORS.items():
+        if k in val:
+            if k == "宿直":
+                matched_color = v.get("text", "#800080")
+                matched_fw = v.get("fw", "bold")
+            else:
+                matched_bg = v.get("bg", "transparent")
+                if "text" in v:
+                    matched_color = v["text"]
+    
+    return f"background-color: {matched_bg}; color: {matched_color}; font-weight: {matched_fw}; text-align: center; white-space: pre-wrap;"
 
 # --- ヘルパー関数 ---
 def safe_int(val):
-    if pd.isna(val) or val == "":
-        return 0
-    try:
-        return int(float(val))
-    except (ValueError, TypeError):
-        return 0
+    if pd.isna(val) or val == "": return 0
+    try: return int(float(val))
+    except (ValueError, TypeError): return 0
 
 def parse_date(date_val):
-    if pd.isna(date_val) or str(date_val).strip() == "":
-        return None
-    d_str = str(date_val).strip()
+    if pd.isna(date_val) or str(date_val).strip() == "": return None
     try:
-        dt = pd.to_datetime(d_str)
+        dt = pd.to_datetime(str(date_val).strip())
         return dt.strftime("%Y-%m-%d")
     except Exception:
         return None
@@ -148,15 +114,9 @@ def parse_date(date_val):
 def get_gspread_client():
     try:
         if "gcp_service_account" in st.secrets:
-            scopes = [
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive"
-            ]
+            scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
             info = dict(st.secrets["gcp_service_account"])
-            credentials = Credentials.from_service_account_info(
-                info,
-                scopes=scopes
-            )
+            credentials = Credentials.from_service_account_info(info, scopes=scopes)
             client = gspread.authorize(credentials)
             return client, None
         else:
@@ -164,16 +124,13 @@ def get_gspread_client():
     except Exception as e:
         return None, str(e)
 
-# --- CRUD ラッパー関数 ---
 @st.cache_data(ttl=60)
 def _fetch_records_cached(sheet_name):
     client, _ = get_gspread_client()
-    if not client:
-        return None
+    if not client: return None
     try:
         sheet_id = st.secrets.get("spreadsheet_id", "")
-        spreadsheet = client.open_by_key(sheet_id)
-        sheet = spreadsheet.worksheet(sheet_name)
+        sheet = client.open_by_key(sheet_id).worksheet(sheet_name)
         return sheet.get_all_records()
     except Exception as e:
         st.error(f"データ取得エラー ({sheet_name}): {e}")
@@ -193,113 +150,50 @@ def fetch_data(sheet_name, expected_columns):
 
 def append_data(sheet_name, row_data):
     client, _ = get_gspread_client()
-    if not client:
-        st.error(f"DB未接続のため、シート「{sheet_name}」への書き込みができません。")
-        return False
-        
+    if not client: return False
     try:
         sheet_id = st.secrets.get("spreadsheet_id", "")
-        spreadsheet = client.open_by_key(sheet_id)
-        sheet = spreadsheet.worksheet(sheet_name)
-        
-        res = sheet.append_row(
-            row_data, 
-            value_input_option="USER_ENTERED",
-            insert_data_option="INSERT_ROWS",
-            table_range="A1"
-        )
+        sheet = client.open_by_key(sheet_id).worksheet(sheet_name)
+        res = sheet.append_row(row_data, value_input_option="USER_ENTERED", insert_data_option="INSERT_ROWS", table_range="A1")
         st.cache_data.clear()
         return res
-    except Exception as e:
-        st.error(f"シート「{sheet_name}」への書き込みでエラーが発生しました。\n詳細: {e}")
-        return False
-
-def append_rows_batch(sheet_name, rows_data):
-    client, _ = get_gspread_client()
-    if not client:
-        st.error(f"DB未接続のため、シート「{sheet_name}」への一括書き込みができません。")
-        return False
-        
-    try:
-        sheet_id = st.secrets.get("spreadsheet_id", "")
-        spreadsheet = client.open_by_key(sheet_id)
-        sheet = spreadsheet.worksheet(sheet_name)
-        
-        res = sheet.append_rows(
-            rows_data, 
-            value_input_option="USER_ENTERED",
-            insert_data_option="INSERT_ROWS",
-            table_range="A1"
-        )
-        st.cache_data.clear()
-        return res
-    except Exception as e:
-        st.error(f"シート「{sheet_name}」への一括書き込みでエラーが発生しました。\n詳細: {e}")
-        return False
+    except Exception: return False
 
 def update_data(sheet_name, search_col_index, search_value, row_data):
     client, _ = get_gspread_client()
-    if not client:
-        st.error(f"DB未接続のため、シート「{sheet_name}」の更新ができません。")
-        return False
-        
+    if not client: return False
     try:
         sheet_id = st.secrets.get("spreadsheet_id", "")
-        spreadsheet = client.open_by_key(sheet_id)
-        sheet = spreadsheet.worksheet(sheet_name)
-        
+        sheet = client.open_by_key(sheet_id).worksheet(sheet_name)
         try:
             cell = sheet.find(str(search_value), in_column=search_col_index)
         except gspread.exceptions.CellNotFound:
-            st.error(f"指定されたデータ（{search_value}）がスプレッドシート上で見つかりませんでした。")
             return False
-            
         row_num = cell.row
-        
         end_col_chr = chr(ord('A') + len(row_data) - 1)
         range_str = f"A{row_num}:{end_col_chr}{row_num}"
-        
-        try:
-            res = sheet.update(range_name=range_str, values=[row_data], value_input_option="USER_ENTERED")
-        except TypeError:
-            res = sheet.update(range_str, [row_data], value_input_option="USER_ENTERED")
-            
+        try: res = sheet.update(range_name=range_str, values=[row_data], value_input_option="USER_ENTERED")
+        except TypeError: res = sheet.update(range_str, [row_data], value_input_option="USER_ENTERED")
         st.cache_data.clear()
-        
         return res
-    except Exception as e:
-        st.error(f"シート「{sheet_name}」の更新処理で予期せぬエラーが発生しました。\n詳細: {e}")
-        return False
+    except Exception: return False
 
 def overwrite_data(sheet_name, df, columns):
     client, _ = get_gspread_client()
-    if not client:
-        st.error(f"DB未接続のため、シート「{sheet_name}」の上書きができません。")
-        return False
+    if not client: return False
     try:
         sheet_id = st.secrets.get("spreadsheet_id", "")
-        spreadsheet = client.open_by_key(sheet_id)
-        sheet = spreadsheet.worksheet(sheet_name)
-        
+        sheet = client.open_by_key(sheet_id).worksheet(sheet_name)
         sheet.clear()
-        
         df = df.fillna("")
-        
         data = [columns] + df[columns].values.tolist()
-        
-        try:
-            res = sheet.update(range_name="A1", values=data, value_input_option="USER_ENTERED")
-        except TypeError:
-            res = sheet.update("A1", data, value_input_option="USER_ENTERED")
-            
+        try: res = sheet.update(range_name="A1", values=data, value_input_option="USER_ENTERED")
+        except TypeError: res = sheet.update("A1", data, value_input_option="USER_ENTERED")
         st.cache_data.clear()
         return res
-    except Exception as e:
-        st.error(f"シート「{sheet_name}」の上書き処理でエラーが発生しました。\n詳細: {e}")
-        return False
+    except Exception: return False
 
-# --- カラム定義（スプレッドシートの列名） ---
-# 雇用形態を一番右に追加
+# --- カラム定義 ---
 COLS_STAFF = ["氏名", "役職", "OPE習熟度", "アンギオ習熟度", "総合コード", "人工心肺メイン回数", "人工心肺サブ回数", "アブレーション回数", "カテ回数", "雇用形態"]
 COLS_REQUEST = ["日時", "氏名", "区分", "コメント"]
 COLS_OPE_MASTER = ["術式名", "術式レベル"]
@@ -310,22 +204,18 @@ COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
 # --- ページUI コンポーネント ---
 
 def page_home():
-    st.markdown('<div class="card"><h2>① ホーム（月間勤務表・シフト）</h2><p>確定した勤務表や術式予定を確認します。</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h2>① ホーム（月間勤務表・シフト）</h2><p>確定した勤務表や術式予定を確認・編集します。</p></div>', unsafe_allow_html=True)
     
     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
     df_ope = fetch_data("術式予定", COLS_OPE_SCHEDULE)
     
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    
     today_date = datetime.date.today()
     years = list(range(today_date.year - 1, today_date.year + 2))
     months = list(range(1, 13))
-    
     col1, col2, _ = st.columns([1, 1, 4])
-    with col1:
-        selected_year = st.selectbox("年を選択", years, index=years.index(today_date.year))
-    with col2:
-        selected_month = st.selectbox("月を選択", months, index=months.index(today_date.month))
+    with col1: selected_year = st.selectbox("年を選択", years, index=years.index(today_date.year))
+    with col2: selected_month = st.selectbox("月を選択", months, index=months.index(today_date.month))
     
     cal = calendar.Calendar(firstweekday=6)
     month_days = cal.monthdatescalendar(selected_year, selected_month)
@@ -336,8 +226,7 @@ def page_home():
             d_key = parse_date(row["日時"])
             if d_key:
                 staff_info = f"{row['氏名']} ({row['割り当て業務']})"
-                if d_key not in shift_dict:
-                    shift_dict[d_key] = []
+                if d_key not in shift_dict: shift_dict[d_key] = []
                 shift_dict[d_key].append(staff_info)
 
     ope_dict = {}
@@ -346,13 +235,10 @@ def page_home():
             d_key = parse_date(row["日時"])
             if d_key:
                 ope_info = str(row['術式'])
-                if d_key not in ope_dict:
-                    ope_dict[d_key] = []
+                if d_key not in ope_dict: ope_dict[d_key] = []
                 ope_dict[d_key].append(ope_info)
                 
-    # ----------------------------------------------------
-    # CSS (カレンダー用グリッドデザイン)
-    # ----------------------------------------------------
+    # --- カレンダー描画 ---
     calendar_css = """
     <style>
         .calendar-container { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin-top: 15px; }
@@ -372,7 +258,6 @@ def page_home():
         .day-ope { font-size: 0.8rem; color: #D63384; font-weight: bold; margin-top: 8px; background-color: #FFF0F6; padding: 4px 6px; border-radius: 4px; white-space: pre-wrap; border-left: 3px solid #D63384; }
     </style>
     """
-    
     st.markdown(calendar_css, unsafe_allow_html=True)
     
     weekdays = ["日", "月", "火", "水", "木", "金", "土"]
@@ -399,21 +284,15 @@ def page_home():
             
             d_str = d.strftime("%Y-%m-%d")
             day_num = d.day
-            
             holiday_name = jpholiday.is_holiday_name(d)
             weekday_list_mapped = ["月", "火", "水", "木", "金", "土", "日"]
             weekday_str = f"{weekday_list_mapped[d.weekday()]}曜日"
-            if holiday_name:
-                weekday_str += f" <span style='color:#DC3545;'>({holiday_name})</span>"
+            if holiday_name: weekday_str += f" <span style='color:#DC3545;'>({holiday_name})</span>"
                 
             staffs = shift_dict.get(d_str, [])
             opes = ope_dict.get(d_str, [])
             
-            # 各タスクの色付け適用
-            staff_html_parts = []
-            for s in staffs:
-                staff_html_parts.append(get_styled_task_html(s, is_calendar=True))
-            
+            staff_html_parts = [get_styled_task_html(s, is_calendar=True) for s in staffs]
             staff_html = "<br>".join(staff_html_parts) if staff_html_parts else ""
             ope_html = "<br>".join(opes) if opes else ""
             
@@ -421,49 +300,45 @@ def page_home():
             html += f'<div class="day-number">{day_num}</div>'
             html += f'<div class="day-weekday">{weekday_str}</div>'
             html += f'<div class="day-staff">{staff_html}</div>'
-            if ope_html:
-                html += f'<div class="day-ope">{ope_html}</div>'
+            if ope_html: html += f'<div class="day-ope">{ope_html}</div>'
             html += '</div>'
-            
     html += '</div>'
-    
     st.markdown(html, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # ----------------------------------------------------
-    # 横型シフト表 ＆ 集計表
-    # ----------------------------------------------------
+    # --- 横型シフト表 ＆ 集計表 (st.data_editor化) ---
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    tab_shift, tab_summary = st.tabs(["📋 横型シフト表", "📊 業務割り当て集計表"])
+    tab_shift, tab_summary = st.tabs(["📋 横型シフト表 (クリックで編集・保存)", "📊 業務割り当て集計表"])
     
     with tab_shift:
         st.write(f"### 📋 {selected_year}年{selected_month}月 横型シフト表")
+        st.info("💡 表の中のセルをクリックすると、割り当て業務を直接書き換えることができます。修正後は必ず下の「編集内容を保存」ボタンを押してください。\n※ 複数の業務を割り当てる場合は `改行` (Shift+Enter等) で入力してください。")
         
         df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
         staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
-        
         _, num_days = calendar.monthrange(selected_year, selected_month)
         
-        cols_tuples = []
+        cols_strings = []
         weekday_list_mapped = ["月", "火", "水", "木", "金", "土", "日"]
         
         for d in range(1, num_days + 1):
             dt = datetime.date(selected_year, selected_month, d)
             d_str = dt.strftime("%Y-%m-%d")
             
-            day_str = f"{d}日"
             wd = dt.weekday()
             is_hol = jpholiday.is_holiday(dt)
             weekday_str = weekday_list_mapped[wd]
-            if is_hol:
-                weekday_str += "(祝)"
-                
+            if is_hol: weekday_str += "(祝)"
+            
             opes = ope_dict.get(d_str, [])
             ope_str = "\n".join(opes) if opes else ""
             
-            cols_tuples.append((day_str, weekday_str, ope_str))
+            # ヘッダーを1つの文字列に結合（改行あり）
+            header_str = f"{d}日\n{weekday_str}"
+            if ope_str: header_str += f"\n{ope_str}"
+            cols_strings.append(header_str)
             
-        shift_matrix = pd.DataFrame(index=staff_list, columns=pd.MultiIndex.from_tuples(cols_tuples, names=["日にち", "曜日", "術式"]))
+        shift_matrix = pd.DataFrame(index=staff_list, columns=cols_strings)
         shift_matrix.fillna("", inplace=True)
         
         if not df_shift.empty:
@@ -475,119 +350,75 @@ def page_home():
                         if dt.year == selected_year and dt.month == selected_month:
                             staff_name = str(row["氏名"])
                             duty = str(row["割り当て業務"])
-                            
-                            wd = dt.weekday()
-                            is_hol = jpholiday.is_holiday(dt)
-                            weekday_str = weekday_list_mapped[wd]
-                            if is_hol:
-                                weekday_str += "(祝)"
-                            
-                            opes = ope_dict.get(d_key, [])
-                            ope_str = "\n".join(opes) if opes else ""
-                            
-                            col_key = (f"{dt.day}日", weekday_str, ope_str)
+                            header_col = cols_strings[dt.day - 1]
                             
                             if staff_name in shift_matrix.index or staff_name.startswith("スタッフ"):
                                 if staff_name not in shift_matrix.index:
                                     shift_matrix.loc[staff_name] = ""
-                                curr_val = shift_matrix.at[staff_name, col_key]
-                                if curr_val:
-                                    shift_matrix.at[staff_name, col_key] = curr_val + "\n" + duty
-                                else:
-                                    shift_matrix.at[staff_name, col_key] = duty
+                                curr_val = shift_matrix.at[staff_name, header_col]
+                                if curr_val: shift_matrix.at[staff_name, header_col] = curr_val + "\n" + duty
+                                else: shift_matrix.at[staff_name, header_col] = duty
                     except Exception:
                         pass
+
+        # Pandas Stylerを用いてインタラクティブデータフレームにカラーを適用
+        try:
+            styled_matrix = shift_matrix.style.map(color_cells_pandas)
+        except AttributeError:
+            styled_matrix = shift_matrix.style.applymap(color_cells_pandas)
+            
+        edited_matrix = st.data_editor(
+            styled_matrix,
+            use_container_width=True,
+            height=600,
+            key="month_shift_editor"
+        )
         
-        html_table = """
-        <style>
-            .shift-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-            .shift-table th, .shift-table td { border: 1px solid #DEE2E6; padding: 4px; }
-            .shift-table thead th { position: sticky; top: 0; z-index: 1; }
-        </style>
-        <div style="overflow-x: auto; max-width: 100%;">
-        <table class="shift-table">
-        """
-        html_table += '<thead><tr><th style="background-color: #F1F3F5; min-width: 100px;">日にち</th>'
-        for col in cols_tuples:
-            date_str, _, _ = col
-            is_today = (date_str == f"{today_date.day}日" and selected_year == today_date.year and selected_month == today_date.month)
-            bg_color = "#FFF3CD" if is_today else "#F1F3F5"
-            html_table += f'<th style="background-color: {bg_color}; text-align: center;">{date_str}</th>'
-        html_table += '</tr>'
-        
-        html_table += '<tr><th style="background-color: #F1F3F5;">曜日</th>'
-        for col in cols_tuples:
-            date_str, wd_str, _ = col
-            bg_color = "#F1F3F5"
-            text_color = "#495057"
-            is_today = (date_str == f"{today_date.day}日" and selected_year == today_date.year and selected_month == today_date.month)
-            if "土" in wd_str:
-                bg_color = "#EBF5FB"
-                text_color = "#0D6EFD"
-            elif "日" in wd_str or "祝" in wd_str:
-                bg_color = "#FDEDEC"
-                text_color = "#DC3545"
-            if is_today: bg_color = "#FFF3CD"
-            html_table += f'<th style="background-color: {bg_color}; color: {text_color}; text-align: center;">{wd_str}</th>'
-        html_table += '</tr>'
-        
-        html_table += '<tr><th style="background-color: #F1F3F5;">術式</th>'
-        for col in cols_tuples:
-            date_str, wd_str, ope_str = col
-            bg_color = "#F8F9FA"
-            if "土" in wd_str: bg_color = "#EBF5FB"
-            elif "日" in wd_str or "祝" in wd_str: bg_color = "#FDEDEC"
-            is_today = (date_str == f"{today_date.day}日" and selected_year == today_date.year and selected_month == today_date.month)
-            if is_today: bg_color = "#FFF3CD"
-            ope_html = str(ope_str).replace("\n", "<br>")
-            html_table += f'<th style="background-color: {bg_color}; vertical-align: top; text-align: center; writing-mode: vertical-rl; text-orientation: upright; padding: 10px 5px; height: 120px; line-height: 1.5;">{ope_html}</th>'
-        html_table += '</tr></thead><tbody>'
-        
-        for staff in shift_matrix.index:
-            html_table += f'<tr><td style="font-weight: bold; background-color: #F8F9FA; white-space: nowrap;">{staff}</td>'
-            for col in cols_tuples:
-                val = shift_matrix.at[staff, col]
-                date_str, wd_str, _ = col
-                bg_color = "#FFFFFF"
-                if "土" in wd_str: bg_color = "#F0F8FF"
-                elif "日" in wd_str or "祝" in wd_str: bg_color = "#FFF0F5"
-                is_today = (date_str == f"{today_date.day}日" and selected_year == today_date.year and selected_month == today_date.month)
-                if is_today: bg_color = "#FFFAEB"
-                
-                val_html = str(val).replace("\n", "<br>")
-                val_html = get_styled_task_html(val_html, is_calendar=False)
-                
-                html_table += f'<td style="background-color: {bg_color}; text-align: center; vertical-align: middle;">{val_html}</td>'
-            html_table += '</tr>'
-        html_table += '</tbody></table></div>'
-        
-        st.markdown(html_table, unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-        
+        if st.button("💾 編集内容をスプレッドシートに保存"):
+            with st.spinner("スプレッドシートに保存中..."):
+                new_draft = []
+                # アンピボットして1次元配列に戻す
+                for staff in edited_matrix.index:
+                    for d in range(1, num_days + 1):
+                        dt = datetime.date(selected_year, selected_month, d)
+                        d_str = dt.strftime("%Y-%m-%d")
+                        header_str = cols_strings[d-1]
+                        
+                        val = str(edited_matrix.at[staff, header_str]).strip()
+                        if val and val != "nan" and val != "None":
+                            tasks = val.split('\n')
+                            for t in tasks:
+                                t = t.strip()
+                                if t: new_draft.append([d_str, staff, t])
+                                
+                if new_draft:
+                    df_shift_all = fetch_data("確定勤務表", COLS_SHIFT)
+                    month_prefix = f"{selected_year}-{selected_month:02d}"
+                    if not df_shift_all.empty:
+                        if "_date_str" not in df_shift_all.columns:
+                            df_shift_all["_date_str"] = df_shift_all["日時"].apply(parse_date)
+                        df_remain = df_shift_all[~df_shift_all["_date_str"].astype(str).str.startswith(month_prefix)].drop(columns=["_date_str"], errors="ignore")
+                    else:
+                        df_remain = pd.DataFrame(columns=COLS_SHIFT)
+                        
+                    df_new_month = pd.DataFrame(new_draft, columns=COLS_SHIFT)
+                    df_final = pd.concat([df_remain, df_new_month], ignore_index=True)
+                    
+                    res = overwrite_data("確定勤務表", df_final, COLS_SHIFT)
+                    if res: st.success(f"{selected_year}年{selected_month}月の編集内容を一括保存しました！")
+                else:
+                    st.warning("保存するデータがありません。")
+                    
         try:
             buffer = io.BytesIO()
             try:
-                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                    shift_matrix.to_excel(writer, sheet_name=f"{selected_month}月シフト")
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer: shift_matrix.to_excel(writer, sheet_name=f"{selected_month}月シフト")
             except Exception:
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    shift_matrix.to_excel(writer, sheet_name=f"{selected_month}月シフト")
-            
-            st.download_button(
-                label="📥 Excel形式でダウンロード (.xlsx)",
-                data=buffer.getvalue(),
-                file_name=f"shift_{selected_year}_{selected_month}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer: shift_matrix.to_excel(writer, sheet_name=f"{selected_month}月シフト")
+            st.download_button(label="📥 Excel形式でダウンロード (.xlsx)", data=buffer.getvalue(), file_name=f"shift_{selected_year}_{selected_month}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         except Exception:
-            st.warning("Excel出力用ライブラリが見つからないため、CSV形式で出力します。")
             csv = shift_matrix.to_csv(encoding="utf-8-sig")
-            st.download_button(
-                label="📥 CSV形式でダウンロード (.csv)",
-                data=csv,
-                file_name=f"shift_{selected_year}_{selected_month}.csv",
-                mime="text/csv"
-            )
+            st.download_button(label="📥 CSV形式でダウンロード (.csv)", data=csv, file_name=f"shift_{selected_year}_{selected_month}.csv", mime="text/csv")
 
     with tab_summary:
         st.write(f"### 📊 {selected_year}年{selected_month}月 業務割り当て総合回数")
@@ -596,30 +427,18 @@ def page_home():
             df_month["日時"] = df_month["日時"].apply(parse_date)
             month_prefix = f"{selected_year}-{selected_month:02d}"
             df_month = df_month[df_month["日時"].astype(str).str.startswith(month_prefix)]
-            
             if not df_month.empty:
                 try:
-                    summary_df = pd.pivot_table(
-                        df_month, 
-                        index="氏名", 
-                        columns="割り当て業務", 
-                        aggfunc="size", 
-                        fill_value=0
-                    )
+                    summary_df = pd.pivot_table(df_month, index="氏名", columns="割り当て業務", aggfunc="size", fill_value=0)
                     summary_df["合計"] = summary_df.sum(axis=1)
                     st.dataframe(summary_df, use_container_width=True)
-                except Exception as e:
-                    st.warning(f"集計処理中にエラーが発生しました: {e}")
-            else:
-                st.info(f"{selected_year}年{selected_month}月の勤務表データがありません。")
-        else:
-            st.info("集計する勤務表データがありません。")
-            
+                except Exception as e: st.warning(f"集計処理中にエラーが発生しました: {e}")
+            else: st.info(f"{selected_year}年{selected_month}月の勤務表データがありません。")
+        else: st.info("集計する勤務表データがありません。")
     st.markdown('</div>', unsafe_allow_html=True)
 
 def page_schedule_task():
     st.markdown('<div class="card"><h2>② 予定・マスタ管理</h2><p>術式予定、希望休入力、各種マスタの管理を行います。</p></div>', unsafe_allow_html=True)
-    
     tab1, tab2, tab3, tab4 = st.tabs(["術式予定", "希望休入力", "業務マスタ管理", "術式マスタ管理"])
     
     with tab1:
@@ -630,12 +449,10 @@ def page_schedule_task():
             df_ope_master = fetch_data("術式マスタ", COLS_OPE_MASTER)
             ope_names = df_ope_master["術式名"].tolist() if not df_ope_master.empty else ["CABG", "AVR", "PCI", "アブレーション"]
             sched_ope = st.selectbox("術式", ope_names)
-            
             if st.form_submit_button("予定追加"):
                 res = append_data("術式予定", [str(sched_date), sched_ope])
                 if res: st.success("スプレッドシートに予定を書き込みました。")
         st.markdown('</div>', unsafe_allow_html=True)
-        
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 登録済み予定一覧")
         st.dataframe(fetch_data("術式予定", COLS_OPE_SCHEDULE), use_container_width=True)
@@ -651,13 +468,11 @@ def page_schedule_task():
             req_name = st.selectbox("氏名", staff_names)
             req_type = st.radio("区分", ["× (不可)", "△ (要相談)"])
             req_comment = st.text_input("コメント")
-            
             if st.form_submit_button("希望休を登録"):
                 val_type = "×" if "×" in req_type else "△"
                 res = append_data("希望入力", [str(req_date), req_name, val_type, req_comment])
                 if res: st.success("スプレッドシートに希望休を書き込みました。")
         st.markdown('</div>', unsafe_allow_html=True)
-
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 登録済み希望一覧")
         st.dataframe(fetch_data("希望入力", COLS_REQUEST), use_container_width=True)
@@ -687,10 +502,8 @@ def page_schedule_task():
                     if st.form_submit_button("情報を更新"):
                         res = update_data("業務マスタ", 1, task_abbr_upd, [task_abbr_upd, task_name_upd])
                         if res: st.success(f"業務マスタ「{task_abbr_upd}」を更新しました。")
-            else:
-                st.info("データがありません。")
+            else: st.info("データがありません。")
         st.markdown('</div>', unsafe_allow_html=True)
-        
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 業務マスタ一覧")
         st.dataframe(fetch_data("業務マスタ", COLS_TASK_MASTER), use_container_width=True)
@@ -721,15 +534,12 @@ def page_schedule_task():
                     if st.form_submit_button("情報を更新"):
                         res = update_data("術式マスタ", 1, ope_name_upd, [ope_name_upd, ope_level_upd])
                         if res: st.success(f"「{ope_name_upd}」の情報を更新しました。")
-            else:
-                st.info("データがありません。")
+            else: st.info("データがありません。")
         st.markdown('</div>', unsafe_allow_html=True)
-
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.write("### 術式マスタ一覧")
         st.dataframe(fetch_data("術式マスタ", COLS_OPE_MASTER), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
-
 
 def page_staff():
     st.markdown('<div class="card"><h2>③ スタッフマスタ管理</h2><p>スタッフの基本情報や各分野の習熟度を管理します。</p></div>', unsafe_allow_html=True)
@@ -747,7 +557,6 @@ def page_staff():
             with col2:
                 ope_level = st.selectbox("OPE習熟度", ["A", "B", "C", "D"])
                 angio_level = st.selectbox("アンギオ習熟度", ["1", "2", "3", "4"])
-            
             st.markdown("---")
             st.write("#### 経験回数・実績")
             col3, col4 = st.columns(2)
@@ -762,10 +571,7 @@ def page_staff():
             st.info(f"💡 OPE・アンギオ習熟度から生成される総合コード: **{total_code}**")
             
             if st.form_submit_button("スタッフ登録"):
-                row = [
-                    staff_name, staff_role, ope_level, angio_level, total_code, 
-                    int(cpb_main), int(cpb_sub), int(ablation_count), int(catha_count), employment_type
-                ]
+                row = [staff_name, staff_role, ope_level, angio_level, total_code, int(cpb_main), int(cpb_sub), int(ablation_count), int(catha_count), employment_type]
                 res = append_data("スタッフマスタ", row)
                 if res: st.success(f"スプレッドシートに「{staff_name}」さんのデータを新規登録しました。")
                     
@@ -811,27 +617,20 @@ def page_staff():
                 st.info(f"💡 新しい総合コード: **{total_code_upd}**")
                 
                 if st.form_submit_button("情報を更新"):
-                    row_upd = [
-                        staff_name_upd, staff_role_upd, ope_level_upd, angio_level_upd, total_code_upd,
-                        int(cpb_main_upd), int(cpb_sub_upd), int(ablation_upd), int(catha_upd), employment_type_upd
-                    ]
+                    row_upd = [staff_name_upd, staff_role_upd, ope_level_upd, angio_level_upd, total_code_upd, int(cpb_main_upd), int(cpb_sub_upd), int(ablation_upd), int(catha_upd), employment_type_upd]
                     res = update_data("スタッフマスタ", 1, staff_name_upd, row_upd)
                     if res: st.success(f"スプレッドシートの「{staff_name_upd}」さんの情報を上書き更新しました。")
-        else:
-            st.info("登録されているスタッフがいません。")
+        else: st.info("登録されているスタッフがいません。")
             
     st.markdown('</div>', unsafe_allow_html=True)
-
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### スタッフ一覧")
     df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
     st.dataframe(df_staff, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-
 def page_shift_creation():
-    st.markdown('<div class="card"><h2>④ 勤務表作成</h2><p>勤務表の「1ヶ月一括作成」と、作成後の「日ごとの微調整」を行います。</p></div>', unsafe_allow_html=True)
-    
+    st.markdown('<div class="card"><h2>④ 勤務表作成</h2><p>勤務表の「1ヶ月一括作成」を行います。（微調整はホーム画面の横型シフト表から直接編集・保存できます）</p></div>', unsafe_allow_html=True)
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### 機能A：1ヶ月一括ドラフト作成（ベース作り）")
     st.info("指定した月の1日〜月末までのシフトを自動生成し、スプレッドシートに保存します。\n※既に該当月のデータがある場合は、対象月のデータがすべて「洗い替え（上書き）」されます。")
@@ -839,19 +638,22 @@ def page_shift_creation():
     with st.form("bulk_draft_form"):
         col1, col2 = st.columns(2)
         today = datetime.date.today()
-        with col1:
-            target_year = st.number_input("対象年", min_value=2020, max_value=2050, value=today.year, step=1)
-        with col2:
-            target_month = st.number_input("対象月", min_value=1, max_value=12, value=today.month, step=1)
+        with col1: target_year = st.number_input("対象年", min_value=2020, max_value=2050, value=today.year, step=1)
+        with col2: target_month = st.number_input("対象月", min_value=1, max_value=12, value=today.month, step=1)
             
         if st.form_submit_button("1ヶ月分の一括ドラフトを作成"):
             with st.spinner(f"{target_year}年{target_month}月のドラフトを作成中..."):
                 df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
                 df_request = fetch_data("希望入力", COLS_REQUEST)
                 
-                staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
-                # 非常勤スタッフの抽出
-                part_time_staff = df_staff[df_staff["雇用形態"] == "非常勤"]["氏名"].tolist() if "雇用形態" in df_staff.columns else []
+                staff_list = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
+                
+                # 非常勤スタッフの抽出（バグ修正: strip()で空白を除去して確実にマッチさせる）
+                part_time_staff = []
+                if "雇用形態" in df_staff.columns:
+                    df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.strip()
+                    df_staff["氏名"] = df_staff["氏名"].astype(str).str.strip()
+                    part_time_staff = df_staff[df_staff["雇用形態"] == "非常勤"]["氏名"].tolist()
                 
                 req_dict = {}
                 if not df_request.empty:
@@ -859,13 +661,11 @@ def page_shift_creation():
                         if "×" in str(row["区分"]):
                             r_date = parse_date(row["日時"])
                             if r_date:
-                                if r_date not in req_dict:
-                                    req_dict[r_date] = []
-                                req_dict[r_date].append(str(row["氏名"]))
+                                if r_date not in req_dict: req_dict[r_date] = []
+                                req_dict[r_date].append(str(row["氏名"]).strip())
                                 
                 _, num_days = calendar.monthrange(target_year, target_month)
                 draft_data = []
-                
                 staff_task_counts = {s: {} for s in staff_list}
                 
                 df_history = fetch_data("確定勤務表", COLS_SHIFT)
@@ -876,20 +676,16 @@ def page_shift_creation():
                         if pd.isna(row["_date_str"]) or not row["_date_str"]: continue
                         h_date = pd.to_datetime(row["_date_str"])
                         if h_date.year < target_year or (h_date.year == target_year and h_date.month < target_month):
-                            s_name = str(row["氏名"])
-                            t_name = str(row["割り当て業務"])
+                            s_name = str(row["氏名"]).strip()
+                            t_name = str(row["割り当て業務"]).strip()
                             if s_name in staff_task_counts:
                                 staff_task_counts[s_name][t_name] = staff_task_counts[s_name].get(t_name, 0) + 1
                                 
-                def get_count(staff, task):
-                    return staff_task_counts.get(staff, {}).get(task, 0)
-                    
+                def get_count(staff, task): return staff_task_counts.get(staff, {}).get(task, 0)
                 def increment_count(staff, task):
-                    if staff not in staff_task_counts:
-                        staff_task_counts[staff] = {}
+                    if staff not in staff_task_counts: staff_task_counts[staff] = {}
                     staff_task_counts[staff][task] = staff_task_counts[staff].get(task, 0) + 1
                 
-                # 月1回の「Ｄ」業務割り当てフラグ
                 d_task_assigned = False
                 
                 for d in range(1, num_days + 1):
@@ -906,12 +702,9 @@ def page_shift_creation():
                         required_tasks = ["日勤"]
                     else:
                         required_tasks = ["カ", "Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ"]
-                        if dt.weekday() == 0:
-                            required_tasks.extend(["ＨＭ", "Ｈサ"])
-                        elif dt.weekday() == 3:
-                            required_tasks.extend(["ＨＭ", "Ｈサ", "Ａ", "Ａ"])
+                        if dt.weekday() == 0: required_tasks.extend(["ＨＭ", "Ｈサ"])
+                        elif dt.weekday() == 3: required_tasks.extend(["ＨＭ", "Ｈサ", "Ａ", "Ａ"])
                             
-                    # Ｄタスクが既に月内で割り当てられていればリストから除外
                     if d_task_assigned and "Ｄ" in required_tasks:
                         required_tasks.remove("Ｄ")
                             
@@ -921,46 +714,40 @@ def page_shift_creation():
                     assigned_today_staffs = []
                     dummy_counter = 0
                     
-                    # 1. 優先割当: 非常勤スタッフに「Ｍ」を割り当てる
+                    # 1. 非常勤スタッフの優先割当（確実に作動）
                     if "Ｍ" in required_tasks:
                         available_part_timers = [s for s in available_staff if s in part_time_staff]
                         if available_part_timers:
                             random.shuffle(available_part_timers)
                             pt_staff = available_part_timers[0]
-                            
                             draft_data.append([d_str, pt_staff, "Ｍ"])
                             assigned_today_staffs.append(pt_staff)
                             increment_count(pt_staff, "Ｍ")
-                            
                             available_staff.remove(pt_staff)
                             required_tasks.remove("Ｍ")
                     
-                    # 2. その他の通常業務を割り当てる
+                    # 2. その他の通常業務
                     for task in required_tasks:
                         if available_staff:
                             random.shuffle(available_staff)
                             available_staff.sort(key=lambda s: get_count(s, task))
                             assigned_staff = available_staff.pop(0)
                             increment_count(assigned_staff, task)
-                            if task == "Ｄ":
-                                d_task_assigned = True
+                            if task == "Ｄ": d_task_assigned = True
                         else:
                             assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
                             dummy_counter += 1
-                            if task == "Ｄ":
-                                d_task_assigned = True
+                            if task == "Ｄ": d_task_assigned = True
                             
                         draft_data.append([d_str, assigned_staff, task])
                         assigned_today_staffs.append(assigned_staff)
                         
-                    # 3. 宿直の割り当て（日勤者の中から重複割り当て）
+                    # 3. 宿直
                     if assigned_today_staffs:
                         real_assigned = [s for s in assigned_today_staffs if s in staff_list]
                         candidates = real_assigned if real_assigned else assigned_today_staffs
-                        
                         random.shuffle(candidates)
                         candidates.sort(key=lambda s: get_count(s, "宿直"))
-                        
                         night_staff = candidates[0]
                         increment_count(night_staff, "宿直")
                         draft_data.append([d_str, night_staff, "宿直"])
@@ -968,7 +755,6 @@ def page_shift_creation():
                 if draft_data:
                     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
                     month_prefix = f"{target_year}-{target_month:02d}"
-                    
                     if not df_shift.empty:
                         if "_date_str" not in df_shift.columns:
                             df_shift["_date_str"] = df_shift["日時"].apply(parse_date)
@@ -976,92 +762,40 @@ def page_shift_creation():
                     else:
                         df_remain = pd.DataFrame(columns=COLS_SHIFT)
                         
-                    df_draft_month = pd.DataFrame(draft_data, columns=COLS_SHIFT)
-                    df_new = pd.concat([df_remain, df_draft_month], ignore_index=True)
-                    
-                    res = overwrite_data("確定勤務表", df_new, COLS_SHIFT)
-                    if res:
-                        st.success(f"{target_year}年{target_month}月の1ヶ月分ドラフトを一括作成し、保存しました！")
-                else:
-                    st.warning("生成対象のデータがありませんでした。")
-                    
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.write("### 機能B：日ごとの微調整・変更（手動調整）")
-    st.info("一括作成されたデータなどを呼び出し、担当者の変更やダミー枠の修正を行います。")
-    
-    target_date = st.date_input("編集する日付を選択", value=datetime.date.today())
-    d_str = target_date.strftime("%Y-%m-%d")
-    
-    df_shift = fetch_data("確定勤務表", COLS_SHIFT)
-    if not df_shift.empty:
-        if "_date_str" not in df_shift.columns:
-            df_shift["_date_str"] = df_shift["日時"].apply(parse_date)
-        df_day = df_shift[df_shift["_date_str"] == d_str].drop(columns=["_date_str"], errors="ignore")
-    else:
-        df_day = pd.DataFrame(columns=COLS_SHIFT)
-        df_shift = pd.DataFrame(columns=COLS_SHIFT)
-        df_shift["_date_str"] = []
-        
-    st.write(f"#### 📝 {d_str} の勤務データ編集")
-    if df_day.empty:
-        st.warning("この日のデータはまだありません。機能Aで一括作成するか、行を追加して作成してください。")
-        
-    edited_df = st.data_editor(
-        df_day if not df_day.empty else pd.DataFrame(columns=COLS_SHIFT),
-        num_rows="dynamic",
-        use_container_width=True,
-        key="daily_editor"
-    )
-    
-    if st.button("この日の勤務表を上書き保存"):
-        with st.spinner("スプレッドシートに保存中..."):
-            if not df_shift.empty:
-                df_remain = df_shift[df_shift["_date_str"] != d_str].drop(columns=["_date_str"], errors="ignore")
-            else:
-                df_remain = pd.DataFrame(columns=COLS_SHIFT)
-                
-            df_new = pd.concat([df_remain, edited_df], ignore_index=True)
-            res = overwrite_data("確定勤務表", df_new, COLS_SHIFT)
-            if res:
-                st.success(f"{d_str} の勤務データを洗い替え保存しました！")
-                
+                    df_new_month = pd.DataFrame(draft_data, columns=COLS_SHIFT)
+                    df_final = pd.concat([df_remain, df_new_month], ignore_index=True)
+                    res = overwrite_data("確定勤務表", df_final, COLS_SHIFT)
+                    if res: st.success(f"{target_year}年{target_month}月の1ヶ月分ドラフトを一括作成し、保存しました！")
+                else: st.warning("生成対象のデータがありませんでした。")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- メイン処理（サイドバー・ナビゲーション） ---
+# --- メイン処理 ---
 def main():
     st.sidebar.markdown("<h2>🏥 ME勤務表管理</h2>", unsafe_allow_html=True)
     st.sidebar.markdown("---")
-    
     pages = {
         "① ホーム（月間勤務表・シフト）": page_home,
         "② 予定・マスタ管理": page_schedule_task,
         "③ スタッフマスタ管理": page_staff,
         "④ 勤務表作成": page_shift_creation
     }
-    
     selection = st.sidebar.radio("メニュー", list(pages.keys()))
-    
     st.sidebar.markdown("---")
     st.sidebar.caption("システムステータス:")
-    
     client, error_msg = get_gspread_client()
     if client is None:
         st.sidebar.error("🔴 DB未接続 (認証エラー)")
         st.sidebar.error(f"エラー詳細:\n{error_msg}")
         st.sidebar.info("現在はプロトタイプ（UIデモ）として動作しています。")
     else:
-        if "spreadsheet_id" not in st.secrets:
-            st.sidebar.error("🔴 DB未接続 (ID未設定)")
+        if "spreadsheet_id" not in st.secrets: st.sidebar.error("🔴 DB未接続 (ID未設定)")
         else:
             try:
                 sheet_id = st.secrets["spreadsheet_id"]
                 client.open_by_key(sheet_id)
                 st.sidebar.success("🟢 DB接続済 (Google Sheets)")
-            except Exception as e:
+            except Exception:
                 st.sidebar.error("🔴 DB未接続 (アクセス失敗)")
-
     pages[selection]()
 
 if __name__ == "__main__":
