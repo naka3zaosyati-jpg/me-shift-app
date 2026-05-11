@@ -354,7 +354,12 @@ def page_home():
         st.info("💡 表の中のセルをクリックすると、**プルダウン形式**で割り当て業務を直接変更できます。修正後は必ず下の「編集内容を保存」ボタンを押してください。")
         
         df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
-        staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
+        if not df_staff.empty:
+            # 空白や None, NaN のスタッフを除外（None表示バグ対策）
+            df_staff = df_staff[df_staff["氏名"].astype(str).str.strip() != ""]
+            df_staff = df_staff[~df_staff["氏名"].astype(str).str.lower().isin(["none", "nan"])]
+        staff_list = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
+        
         _, num_days = calendar.monthrange(selected_year, selected_month)
         
         cols_strings = []
@@ -387,8 +392,8 @@ def page_home():
                     try:
                         dt = datetime.datetime.strptime(d_key, "%Y-%m-%d")
                         if dt.year == selected_year and dt.month == selected_month:
-                            staff_name = str(row["氏名"])
-                            duty = str(row["割り当て業務"])
+                            staff_name = str(row["氏名"]).strip()
+                            duty = str(row["割り当て業務"]).strip()
                             header_col = cols_strings[dt.day - 1]
                             
                             if staff_name in shift_matrix.index or staff_name.startswith("スタッフ"):
@@ -693,6 +698,11 @@ def page_shift_creation():
         if st.form_submit_button("1ヶ月分の一括ドラフトを作成"):
             with st.spinner(f"{target_year}年{target_month}月のドラフトを作成中..."):
                 df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
+                # 空白や None, NaN のスタッフを除外（None表示バグ対策）
+                if not df_staff.empty:
+                    df_staff = df_staff[df_staff["氏名"].astype(str).str.strip() != ""]
+                    df_staff = df_staff[~df_staff["氏名"].astype(str).str.lower().isin(["none", "nan"])]
+                
                 df_request = fetch_data("希望入力", COLS_REQUEST)
                 
                 staff_list = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
@@ -759,6 +769,10 @@ def page_shift_creation():
                     unavailable = req_dict.get(d_str, [])
                     available_staff = [s for s in staff_list if s not in unavailable]
                     
+                    # 休日・祝日の場合、非常勤スタッフは日勤の対象外とするためリストから除外
+                    if is_off_day:
+                        available_staff = [s for s in available_staff if s not in part_time_staff]
+                        
                     assigned_today_staffs = []
                     dummy_counter = 0
                     
@@ -792,19 +806,23 @@ def page_shift_creation():
                         
                     # 3. 宿直
                     if assigned_today_staffs:
-                        real_assigned = [s for s in assigned_today_staffs if s in staff_list]
-                        candidates = real_assigned if real_assigned else assigned_today_staffs
-                        random.shuffle(candidates)
-                        candidates.sort(key=lambda s: get_count(s, "宿直"))
-                        night_staff = candidates[0]
-                        increment_count(night_staff, "宿直")
-                        draft_data.append([d_str, night_staff, "宿直"])
+                        # 宿直からは非常勤を常に除外する
+                        real_assigned = [s for s in assigned_today_staffs if s in staff_list and s not in part_time_staff]
+                        candidates = real_assigned if real_assigned else [s for s in assigned_today_staffs if s not in part_time_staff]
+                        
+                        if candidates:
+                            random.shuffle(candidates)
+                            candidates.sort(key=lambda s: get_count(s, "宿直"))
+                            night_staff = candidates[0]
+                            increment_count(night_staff, "宿直")
+                            draft_data.append([d_str, night_staff, "宿直"])
                         
                     # 4. 余剰スタッフの割り当て（「フリー」枠）
-                    # この時点で available_staff に残っているのは、どの業務にも割り当てられなかったスタッフです
-                    for leftover_staff in available_staff:
-                        draft_data.append([d_str, leftover_staff, "フリー"])
-                        increment_count(leftover_staff, "フリー")
+                    # 平日のみ、どの業務にも割り当てられなかったスタッフをフリーとする
+                    if not is_off_day:
+                        for leftover_staff in available_staff:
+                            draft_data.append([d_str, leftover_staff, "フリー"])
+                            increment_count(leftover_staff, "フリー")
                         
                 if draft_data:
                     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
