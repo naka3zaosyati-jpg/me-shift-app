@@ -42,6 +42,13 @@ TASK_COLORS = {
     "Ｒ": {"bg": "#FFC0CB", "text": "black"},
     "宿直": {"bg": "transparent", "text": "#800080", "fw": "bold"},
     "日勤": {"bg": "#FD7E14", "text": "white"},
+    "フリー": {"bg": "#E2E3E5", "text": "black"}, # 余剰スタッフ用
+}
+
+HOLIDAY_COLORS = {
+    "土": "#EBF5FB",    # 薄い青
+    "日祝": "#FDEDEC",  # 薄い赤
+    "今日": "#FFF3CD"   # 薄い黄色
 }
 
 def get_styled_task_html(text, is_calendar=False):
@@ -75,26 +82,45 @@ def get_styled_task_html(text, is_calendar=False):
             res.append(item)
     return "<br>".join(res)
 
-def color_cells_pandas(val):
-    """Pandas Styler 用のセルカラー判定"""
-    if not isinstance(val, str) or not val:
-        return ""
-    matched_bg = "transparent"
-    matched_color = "inherit"
-    matched_fw = "normal"
-    
-    # 複数マッチする場合は最初のタスク（もしくは宿直）のスタイルを適用
-    for k, v in TASK_COLORS.items():
-        if k in val:
-            if k == "宿直":
-                matched_color = v.get("text", "#800080")
-                matched_fw = v.get("fw", "bold")
-            else:
-                matched_bg = v.get("bg", "transparent")
-                if "text" in v:
-                    matched_color = v["text"]
-    
-    return f"background-color: {matched_bg}; color: {matched_color}; font-weight: {matched_fw}; text-align: center; white-space: pre-wrap;"
+def style_shift_matrix(df, today_date):
+    """
+    Pandas Styler 用の関数（axis=None で DataFrame 全体に適用）。
+    列ごとの休日カラー（背景）と、セルごとの業務カラーを組み合わせて適用します。
+    """
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    for col in df.columns:
+        is_sat = "土" in col
+        is_sun_or_hol = "日" in col or "祝" in col
+        
+        # col には "11日\n月曜日\n" のような文字列が入っているため前方一致等で判定
+        is_today = str(col).startswith(f"{today_date.day}日\n")
+        
+        base_bg = "#FFFFFF"
+        if is_sun_or_hol: base_bg = HOLIDAY_COLORS["日祝"]
+        elif is_sat: base_bg = HOLIDAY_COLORS["土"]
+        
+        # 本日は最優先でハイライト
+        if is_today: base_bg = HOLIDAY_COLORS["今日"]
+            
+        for row in df.index:
+            val = df.at[row, col]
+            
+            matched_bg = base_bg
+            matched_color = "inherit"
+            matched_fw = "normal"
+            
+            if isinstance(val, str) and val:
+                for k, v in TASK_COLORS.items():
+                    if k in val:
+                        if k == "宿直":
+                            matched_color = v.get("text", "#800080")
+                            matched_fw = v.get("fw", "bold")
+                        else:
+                            matched_bg = v.get("bg", "transparent")
+                            if "text" in v: matched_color = v["text"]
+            
+            styles.at[row, col] = f"background-color: {matched_bg}; color: {matched_color}; font-weight: {matched_fw}; text-align: center; white-space: pre-wrap;"
+    return styles
 
 # --- ヘルパー関数 ---
 def safe_int(val):
@@ -158,6 +184,19 @@ def append_data(sheet_name, row_data):
         st.cache_data.clear()
         return res
     except Exception: return False
+
+def append_rows_batch(sheet_name, rows_data):
+    client, _ = get_gspread_client()
+    if not client: return False
+    try:
+        sheet_id = st.secrets.get("spreadsheet_id", "")
+        sheet = client.open_by_key(sheet_id).worksheet(sheet_name)
+        res = sheet.append_rows(rows_data, value_input_option="USER_ENTERED", insert_data_option="INSERT_ROWS", table_range="A1")
+        st.cache_data.clear()
+        return res
+    except Exception as e:
+        st.error(f"シート「{sheet_name}」への一括書き込みでエラーが発生しました。\n詳細: {e}")
+        return False
 
 def update_data(sheet_name, search_col_index, search_value, row_data):
     client, _ = get_gspread_client()
@@ -312,7 +351,7 @@ def page_home():
     
     with tab_shift:
         st.write(f"### 📋 {selected_year}年{selected_month}月 横型シフト表")
-        st.info("💡 表の中のセルをクリックすると、割り当て業務を直接書き換えることができます。修正後は必ず下の「編集内容を保存」ボタンを押してください。\n※ 複数の業務を割り当てる場合は `改行` (Shift+Enter等) で入力してください。")
+        st.info("💡 表の中のセルをクリックすると、**プルダウン形式**で割り当て業務を直接変更できます。修正後は必ず下の「編集内容を保存」ボタンを押してください。")
         
         df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
         staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
@@ -361,17 +400,27 @@ def page_home():
                     except Exception:
                         pass
 
-        # Pandas Stylerを用いてインタラクティブデータフレームにカラーを適用
-        try:
-            styled_matrix = shift_matrix.style.map(color_cells_pandas)
-        except AttributeError:
-            styled_matrix = shift_matrix.style.applymap(color_cells_pandas)
+        # プルダウン（SelectboxColumn）用の選択肢を生成
+        base_options = ["", "フリー", "ＨＭ", "Ｈサ", "Ａ", "カ", "Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ", "日勤", "宿直"]
+        combos = [o + "\n宿直" for o in base_options if o and o != "宿直"]
+        all_options = base_options + combos
+        
+        # すべてのカラムにプルダウン設定を適用
+        column_config = {}
+        for col in cols_strings:
+            column_config[col] = st.column_config.SelectboxColumn(
+                options=all_options,
+                default=""
+            )
+
+        styled_matrix = shift_matrix.style.apply(lambda df: style_shift_matrix(df, today_date), axis=None)
             
         edited_matrix = st.data_editor(
             styled_matrix,
             use_container_width=True,
             height=600,
-            key="month_shift_editor"
+            key="month_shift_editor",
+            column_config=column_config
         )
         
         if st.button("💾 編集内容をスプレッドシートに保存"):
@@ -648,7 +697,6 @@ def page_shift_creation():
                 
                 staff_list = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
                 
-                # 非常勤スタッフの抽出（バグ修正: strip()で空白を除去して確実にマッチさせる）
                 part_time_staff = []
                 if "雇用形態" in df_staff.columns:
                     df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.strip()
@@ -714,7 +762,7 @@ def page_shift_creation():
                     assigned_today_staffs = []
                     dummy_counter = 0
                     
-                    # 1. 非常勤スタッフの優先割当（確実に作動）
+                    # 1. 非常勤スタッフの優先割当
                     if "Ｍ" in required_tasks:
                         available_part_timers = [s for s in available_staff if s in part_time_staff]
                         if available_part_timers:
@@ -751,6 +799,12 @@ def page_shift_creation():
                         night_staff = candidates[0]
                         increment_count(night_staff, "宿直")
                         draft_data.append([d_str, night_staff, "宿直"])
+                        
+                    # 4. 余剰スタッフの割り当て（「フリー」枠）
+                    # この時点で available_staff に残っているのは、どの業務にも割り当てられなかったスタッフです
+                    for leftover_staff in available_staff:
+                        draft_data.append([d_str, leftover_staff, "フリー"])
+                        increment_count(leftover_staff, "フリー")
                         
                 if draft_data:
                     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
