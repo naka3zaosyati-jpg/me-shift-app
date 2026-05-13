@@ -865,7 +865,7 @@ def page_shift_creation():
             with st.spinner(f"{target_year}年{target_month}月のドラフトを作成中..."):
                 df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
                 if not df_staff.empty:
-                    df_staff["氏名"] = df_staff["氏名"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
+                    df_staff["氏名"] = df_staff["氏名"].astype(str).str.replace(r'[\s　]+', '', regex=True)
                     df_staff = df_staff[df_staff["氏名"] != ""]
                     df_staff = df_staff[~df_staff["氏名"].str.lower().isin(["none", "nan"])]
                 
@@ -876,7 +876,7 @@ def page_shift_creation():
                 staff_ope_dict = {}
                 staff_angio_dict = {}
                 if "雇用形態" in df_staff.columns:
-                    df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
+                    df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.replace(r'[\s　]+', '', regex=True)
                     part_time_staff = df_staff[df_staff["雇用形態"] == "非常勤"]["氏名"].tolist()
                 
                 if not df_staff.empty:
@@ -890,8 +890,8 @@ def page_shift_creation():
                 req_night_shift = {}
                 if not df_request.empty:
                     df_request["日時_date"] = pd.to_datetime(df_request["日時"], errors="coerce").dt.date
-                    df_request["氏名"] = df_request["氏名"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
-                    df_request["区分"] = df_request["区分"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
+                    df_request["氏名"] = df_request["氏名"].astype(str).str.replace(r'[\s　]+', '', regex=True)
+                    df_request["区分"] = df_request["区分"].astype(str).str.replace(r'[\s　]+', '', regex=True)
                     for _, row in df_request.dropna(subset=["日時_date"]).iterrows():
                         r_date = row["日時_date"]
                         kubun = row["区分"]
@@ -918,7 +918,7 @@ def page_shift_creation():
                 df_history = fetch_data("確定勤務表", COLS_SHIFT)
                 if not df_history.empty:
                     df_history["日時_date"] = pd.to_datetime(df_history["日時"], errors="coerce").dt.date
-                    df_history["氏名"] = df_history["氏名"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
+                    df_history["氏名"] = df_history["氏名"].astype(str).str.replace(r'[\s　]+', '', regex=True)
                     for _, row in df_history.dropna(subset=["日時_date"]).iterrows():
                         h_date = row["日時_date"]
                         s_name = row["氏名"]
