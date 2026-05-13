@@ -451,7 +451,8 @@ def page_home(is_admin=False):
                             else: shift_matrix.at[staff_name, header_col] = duty
 
             base_options = ["", "フリー", "ＨＭ", "Ｈサ", "Ａ", "カ", "Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ", "日勤", "宿直"]
-            combos = [o + "\\n宿直" for o in base_options if o and o != "宿直"]
+            combos = [o + "\\n宿直" for o in base_options if o and o not in ["宿直", "日勤"]]
+            combos.append("宿直\\n日勤")
             all_options = base_options + combos
             
             column_config = {}
@@ -907,6 +908,15 @@ def page_shift_creation():
                 _, num_days = calendar.monthrange(target_year, target_month)
                 draft_data = []
                 
+                # ーーー 月間の「△」を事前確保（ロック） ーーー
+                pre_assigned_shukuchoku = {s: set() for s in staff_list}
+                for d in range(1, num_days + 1):
+                    dt = datetime.date(target_year, target_month, d)
+                    abs_day = (dt - datetime.date(2020, 1, 1)).days
+                    wishers = [s for s in req_night_shift.get(dt, []) if s in staff_list and s not in part_time_staff]
+                    for w in wishers:
+                        pre_assigned_shukuchoku[w].add(abs_day)
+                
                 # --- 年間を通じた回数均等化の準備 ---
                 fiscal_year = target_year if target_month >= 4 else target_year - 1
                 fy_start = datetime.date(fiscal_year, 4, 1)
@@ -949,9 +959,12 @@ def page_shift_creation():
                     if staff not in annual_task_counts: annual_task_counts[staff] = {}
                     annual_task_counts[staff][task] = annual_task_counts[staff].get(task, 0) + 1
                     
-                def can_do_night_or_holiday(staff, current_abs_day):
+                def can_do_night_or_holiday(staff, current_abs_day, is_random_assignment=False):
                     for d in staff_night_holiday_abs_days[staff]:
                         if abs(d - current_abs_day) <= 3: return False
+                    if is_random_assignment:
+                        for d in pre_assigned_shukuchoku[staff]:
+                            if d != current_abs_day and abs(d - current_abs_day) <= 3: return False
                     return True
 
                 holiday_block_map = {}
@@ -1029,7 +1042,7 @@ def page_shift_creation():
                     # 2. 希望宿直（△）の確定: 平日・休日問わず、「△」を出している人を最優先で宿直枠（休日は1名体制枠）に確定させる
                     wishers = [s for s in req_night_shift.get(dt, []) if s in available_staff and s not in part_time_staff]
                     # ★修正：回数上限ルール（月4回、休日月1回、連休1回など）を無視して絶対優先。前後3日間の間隔ルールのみ適用。
-                    valid_wishers = [s for s in wishers if can_do_night_or_holiday(s, current_abs_day)]
+                    valid_wishers = [s for s in wishers if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=False)]
                         
                     if valid_wishers:
                         if is_off_day:
@@ -1152,13 +1165,13 @@ def page_shift_creation():
                         night_cands_all = [s for s in (assigned_today_staffs + available_staff) if s in staff_list and s not in part_time_staff]
                         night_cands_all = list(dict.fromkeys(night_cands_all))
                         
-                        valid_night = [s for s in night_cands_all if can_do_night_or_holiday(s, current_abs_day) and monthly_night_count.get(s, 0) < 4]
+                        valid_night = [s for s in night_cands_all if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4]
                         if is_off_day:
                             valid_night_holiday = [s for s in valid_night if monthly_holiday_night_count.get(s, 0) < 1 and not has_worked_in_block(s, d)]
                             if not valid_night_holiday:
-                                valid_night_holiday = [s for s in night_cands_all if can_do_night_or_holiday(s, current_abs_day) and monthly_night_count.get(s, 0) < 4 and monthly_holiday_night_count.get(s, 0) < 2 and not has_worked_in_block(s, d)]
+                                valid_night_holiday = [s for s in night_cands_all if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4 and monthly_holiday_night_count.get(s, 0) < 2 and not has_worked_in_block(s, d)]
                             if not valid_night_holiday:
-                                valid_night_holiday = [s for s in night_cands_all if can_do_night_or_holiday(s, current_abs_day) and monthly_night_count.get(s, 0) < 4 and not has_worked_in_block(s, d)]
+                                valid_night_holiday = [s for s in night_cands_all if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4 and not has_worked_in_block(s, d)]
                             valid_night = valid_night_holiday
 
                         if not valid_night:
@@ -1239,6 +1252,17 @@ def page_shift_creation():
                             task_today = row[2]
                             if task_today not in ["宿直", "日勤", "フリー"]:
                                 yesterday_tasks[s_name] = task_today
+
+                    # ーーー 1日の処理の最後で draft_data を並び替え ーーー
+                    today_draft = [r for r in draft_data if r[0] == d_str]
+                    draft_data = [r for r in draft_data if r[0] != d_str]
+                    def sort_key(row):
+                        task = row[2]
+                        if task == "宿直": return 99 if not is_off_day else -1
+                        if task == "日勤": return 1
+                        return 0
+                    today_draft.sort(key=lambda r: (r[1], sort_key(r)))
+                    draft_data.extend(today_draft)
 
                 if draft_data:
                     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
