@@ -525,22 +525,95 @@ def page_schedule_task():
 
     with tab2:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.write("### 希望休入力")
-        with st.form("request_form", clear_on_submit=True):
-            req_date = st.date_input("希望日時")
-            df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
-            staff_names = df_staff["氏名"].tolist() if not df_staff.empty else ["テスト太郎", "テスト花子"]
-            req_name = st.selectbox("氏名", staff_names)
-            req_type = st.radio("区分", ["× (不可)", "△ (宿直希望)", "年 (年休希望)"])
-            req_comment = st.text_input("コメント")
-            if st.form_submit_button("希望休を登録"):
-                val_type = "×" if "×" in req_type else ("年" if "年" in req_type else "△")
-                res = append_data("希望入力", [str(req_date), req_name, val_type, req_comment])
-                if res: st.success("スプレッドシートに希望休を書き込みました。")
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.write("### 登録済み希望一覧")
-        st.dataframe(fetch_data("希望入力", COLS_REQUEST), use_container_width=True)
+        st.write("### 🗓️ 希望休入力（月間カレンダー）")
+        st.info("💡 対象の年月を選択し、表のセルをクリックして希望（×, △, 年）を入力してください。修正後は必ず「希望休を一括保存」を押してください。")
+        
+        df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
+        if not df_staff.empty:
+            df_staff = df_staff[df_staff["氏名"].astype(str).str.strip() != ""]
+        staff_names = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
+        
+        today_date = datetime.date.today()
+        years_req = list(range(today_date.year - 1, today_date.year + 2))
+        months_req = list(range(1, 13))
+        
+        col_req1, col_req2, _ = st.columns([1, 1, 4])
+        with col_req1: req_year = st.selectbox("対象年", years_req, index=years_req.index(today_date.year), key="req_year")
+        with col_req2: req_month = st.selectbox("対象月", months_req, index=months_req.index(today_date.month), key="req_month")
+        
+        _, num_days_req = calendar.monthrange(req_year, req_month)
+        
+        cols_req_strings = []
+        weekday_list_mapped = ["月", "火", "水", "木", "金", "土", "日"]
+        
+        for d in range(1, num_days_req + 1):
+            dt = datetime.date(req_year, req_month, d)
+            wd = dt.weekday()
+            is_hol = jpholiday.is_holiday(dt)
+            weekday_str = weekday_list_mapped[wd]
+            if is_hol: weekday_str += "(祝)"
+            cols_req_strings.append(f"{d}日\n{weekday_str}")
+            
+        req_matrix = pd.DataFrame(index=staff_names, columns=cols_req_strings)
+        req_matrix.fillna("", inplace=True)
+        
+        df_request_all = fetch_data("希望入力", COLS_REQUEST)
+        if not df_request_all.empty:
+            for _, row in df_request_all.iterrows():
+                d_key = parse_date(row["日時"])
+                if d_key:
+                    try:
+                        dt = datetime.datetime.strptime(d_key, "%Y-%m-%d")
+                        if dt.year == req_year and dt.month == req_month:
+                            s_name = str(row["氏名"]).strip()
+                            kubun = str(row["区分"]).strip()
+                            if s_name in req_matrix.index:
+                                req_matrix.at[s_name, cols_req_strings[dt.day - 1]] = kubun
+                    except Exception: pass
+                    
+        column_config_req = {}
+        for col in cols_req_strings:
+            column_config_req[col] = st.column_config.SelectboxColumn(
+                options=["", "×", "△", "年"],
+                default=""
+            )
+            
+        edited_req_matrix = st.data_editor(
+            req_matrix,
+            use_container_width=True,
+            height=600,
+            key="req_month_editor",
+            column_config=column_config_req
+        )
+        
+        if st.button("💾 希望休を一括保存"):
+            with st.spinner("スプレッドシートに保存中..."):
+                new_req_list = []
+                for staff in edited_req_matrix.index:
+                    for d in range(1, num_days_req + 1):
+                        dt = datetime.date(req_year, req_month, d)
+                        d_str = dt.strftime("%Y-%m-%d")
+                        header_str = cols_req_strings[d-1]
+                        
+                        val = str(edited_req_matrix.at[staff, header_str]).strip()
+                        if val and val != "nan" and val != "None":
+                            new_req_list.append([d_str, staff, val, ""])
+                            
+                month_prefix = f"{req_year}-{req_month:02d}"
+                if not df_request_all.empty:
+                    if "_date_str" not in df_request_all.columns:
+                        df_request_all["_date_str"] = df_request_all["日時"].apply(parse_date)
+                    df_remain = df_request_all[~df_request_all["_date_str"].astype(str).str.startswith(month_prefix)].drop(columns=["_date_str"], errors="ignore")
+                else:
+                    df_remain = pd.DataFrame(columns=COLS_REQUEST)
+                    
+                df_new_req_month = pd.DataFrame(new_req_list, columns=COLS_REQUEST)
+                df_final_req = pd.concat([df_remain, df_new_req_month], ignore_index=True)
+                
+                res = overwrite_data("希望入力", df_final_req, COLS_REQUEST)
+                if res: st.success(f"{req_year}年{req_month}月の希望休を一括保存しました！")
+                else: st.error("保存に失敗しました。")
+                
         st.markdown('</div>', unsafe_allow_html=True)
 
     with tab3:
@@ -790,6 +863,27 @@ def page_shift_creation():
     with col1: target_year = st.number_input("対象年", min_value=2020, max_value=2050, value=today.year, step=1)
     with col2: target_month = st.number_input("対象月", min_value=1, max_value=12, value=today.month, step=1)
     
+    st.write("#### ⚕️ 今月の心外メイン（ＨＭ）最低割り当て回数設定")
+    st.info("※OPE習熟度「C」以上のスタッフのみ表示されます。設定した回数に未到達のスタッフが優先してHMに割り当てられます。**「0」を指定したスタッフはHM候補から完全に除外されます。**")
+    
+    df_staff_hm = fetch_data("スタッフマスタ", COLS_STAFF)
+    hm_cands_init = []
+    if not df_staff_hm.empty:
+        for _, row in df_staff_hm.iterrows():
+            sname = str(row["氏名"]).strip()
+            ope_rank = str(row.get("OPE習熟度", "A")).strip()
+            if sname and ope_rank >= 'C':
+                hm_cands_init.append(sname)
+                
+    hm_min_df = pd.DataFrame(index=hm_cands_init, columns=["最低回数"])
+    hm_min_df["最低回数"] = 0
+    edited_hm_min = st.data_editor(
+        hm_min_df, 
+        column_config={"最低回数": st.column_config.NumberColumn("最低回数", min_value=0, max_value=31, step=1)},
+        use_container_width=True, 
+        key="hm_min_editor"
+    )
+    
     def is_off_day_func(dt):
         return dt.weekday() >= 5 or jpholiday.is_holiday(dt) or (dt.month == 12 and dt.day >= 29) or (dt.month == 1 and dt.day <= 3)
 
@@ -928,6 +1022,9 @@ def page_shift_creation():
 
                 monthly_night_count = {s: 0 for s in staff_list}
                 monthly_holiday_night_count = {s: 0 for s in staff_list}
+                
+                hm_min_counts = {k: safe_int(v) for k, v in edited_hm_min["最低回数"].to_dict().items()}
+                monthly_hm_count = {s: 0 for s in staff_list}
 
                 def get_annual_count(staff, task):
                     if task == "心外": return annual_task_counts.get(staff, {}).get("ＨＭ", 0) + annual_task_counts.get(staff, {}).get("Ｈサ", 0)
@@ -1039,42 +1136,50 @@ def page_shift_creation():
 
                     # 3. 心外枠 (ＨＭ, Ｈサ)
                     for _ in range(heart_count):
-                        d_cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'D']
-                        d_cands.sort(key=lambda s: get_annual_count(s, "心外"))
-                        
-                        first = None
-                        if d_cands:
-                            first = d_cands[0]
-                        else:
-                            c_cands_fallback = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'C']
-                            c_cands_fallback.sort(key=lambda s: get_annual_count(s, "心外"))
-                            if c_cands_fallback:
-                                first = c_cands_fallback[0]
-                                
-                        c_cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'C' and s != first]
-                        c_cands.sort(key=lambda s: get_annual_count(s, "心外"))
-                        second = None
-                        if c_cands:
-                            second = c_cands[0]
+                        hm_cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'C' and hm_min_counts.get(s, 0) > 0]
+                        hm_staff = None
+                        if hm_cands:
+                            hm_cands.sort(key=lambda s: (
+                                1 if monthly_hm_count.get(s, 0) >= hm_min_counts.get(s, 0) else 0,
+                                get_annual_count(s, "心外")
+                            ))
+                            hm_staff = hm_cands[0]
                             
-                        picked = [p for p in [first, second] if p is not None]
-                        
-                        has_c = any(staff_ope_dict.get(s, 'A') == 'C' for s in picked)
-                        if has_c:
-                            third_cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'C' and s not in picked]
-                            third_cands.sort(key=lambda s: get_annual_count(s, "心外"))
-                            if third_cands:
-                                picked.append(third_cands[0])
+                        picked_h_subs = []
+                        if hm_staff:
+                            hm_rank = staff_ope_dict.get(hm_staff, 'A')
+                            
+                            if hm_rank == 'C':
+                                d_cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'D' and s != hm_staff]
+                                d_cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                                if d_cands:
+                                    picked_h_subs.append(d_cands[0])
                                 
-                        if picked:
-                            picked.sort(key=lambda s: staff_ope_dict.get(s, 'A'), reverse=True)
-                            hm_staff = picked[0]
+                                other_cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff and s not in picked_h_subs]
+                                other_cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                                if other_cands:
+                                    picked_h_subs.append(other_cands[0])
+                            else:
+                                sub_cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff]
+                                sub_cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                                if sub_cands:
+                                    first_sub = sub_cands[0]
+                                    picked_h_subs.append(first_sub)
+                                    
+                                    if staff_ope_dict.get(first_sub, 'A') == 'C':
+                                        other_cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff and s not in picked_h_subs]
+                                        other_cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                                        if other_cands:
+                                            picked_h_subs.append(other_cands[0])
+                        
+                        if hm_staff:
                             draft_data.append([d_str, hm_staff, "ＨＭ"])
                             increment_annual_count(hm_staff, "ＨＭ")
+                            monthly_hm_count[hm_staff] += 1
                             available_staff.remove(hm_staff)
                             assigned_today_staffs.append(hm_staff)
                             
-                            for h_sub in picked[1:]:
+                            for h_sub in picked_h_subs:
                                 draft_data.append([d_str, h_sub, "Ｈサ"])
                                 increment_annual_count(h_sub, "Ｈサ")
                                 available_staff.remove(h_sub)
