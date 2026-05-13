@@ -1085,16 +1085,22 @@ def page_shift_creation():
                     ablation_count = opes_gyomu.count("アブレーション")
                     
                     c_needed = 0
+                    is_ablation_day = False
                     if is_off_day:
                         required_tasks = ["日勤"]
                     else:
                         required_tasks = ["Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ"]
-                        c_needed = 1
                         week_cols = ["月", "火", "水", "木", "金"]
                         if 0 <= dt.weekday() <= 4:
                             day_str = week_cols[dt.weekday()]
                             if default_settings["心外"][day_str]: heart_count += 1
                             if default_settings["アブレーション"][day_str]: ablation_count += 1
+                        
+                        is_ablation_day = ablation_count > 0
+                        if is_ablation_day:
+                            c_needed = 0
+                        else:
+                            c_needed = 1
                     
                     if d_task_assigned_this_month and "Ｄ" in required_tasks:
                         required_tasks.remove("Ｄ")
@@ -1121,7 +1127,8 @@ def page_shift_creation():
                             required_tasks.remove("Ｍ")
                     
                     # 2. アブレーション枠 (Ａ)
-                    for _ in range(ablation_count):
+                    ablation_slots = 2 if is_ablation_day else 0
+                    for _ in range(ablation_slots):
                         candidates = [s for s in available_staff if safe_int(staff_angio_dict.get(s, 0)) >= 3]
                         if not candidates:
                             assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
