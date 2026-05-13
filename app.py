@@ -722,6 +722,63 @@ def page_staff():
 
 def page_shift_creation():
     st.markdown('<div class="card"><h2>④ 勤務表作成</h2><p>勤務表の「1ヶ月一括作成」を行います。（微調整はホーム画面の横型シフト表から直接編集・保存できます）</p></div>', unsafe_allow_html=True)
+    
+    with st.expander("現在の自動割り当てアルゴリズム（条件）"):
+        st.markdown("""
+- **優先割り当て**: 「非常勤」のスタッフは、平日は最優先で「Ｍ（ME業務）」に配置されます。
+- **必要枠の生成**: 平日は基本業務（カ, Ｉ, Ｏ, Ｍ, Ｄ, Ｒ）各1名を配置します。心外枠・アブレーション枠は、下部の曜日設定でチェックが入っている曜日のみ追加生成されます。
+- **宿直（平日）**: 宿直枠は独立させず、その日の日勤者の中からランダムに1名選出され、業務を兼任します。
+- **休日・祝日**: 1名体制とし、その1名が日勤と宿直を兼任します。平日の通常業務は配置しません。
+- **特殊条件**: Ｄ（DC確認）業務は月に1回のみ配置されます。
+- **スキル制限（安全管理）**: 心外枠（ＨＭ・Ｈサ）には、スタッフマスタの「OPE習熟度」が A, B, C のいずれかであるスタッフのみが選出されます。
+- **公平性の担保**: 全ての業務において、月内での割り当て回数が最も少ないスタッフを優先的に選出し、同回数の場合はランダムで決定します。
+        """)
+
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.write("### 曜日別枠設定")
+    df_sys = fetch_data("システム設定", ["項目", "月", "火", "水", "木", "金"])
+    
+    default_settings = {
+        "心外": {"月": False, "火": False, "水": False, "木": False, "金": False},
+        "アブレーション": {"月": False, "火": False, "水": False, "木": False, "金": False}
+    }
+    
+    if not df_sys.empty:
+        for _, row in df_sys.iterrows():
+            item = str(row.get("項目", "")).strip()
+            if item in default_settings:
+                for d in ["月", "火", "水", "木", "金"]:
+                    val = str(row.get(d, "")).lower()
+                    default_settings[item][d] = val in ['true', '1', 'yes', 'on', 't']
+
+    with st.form("sys_settings_form"):
+        st.write("#### 心外枠（ＨＭ・Ｈサ）")
+        cols_heart = st.columns(5)
+        new_heart = {}
+        for i, d in enumerate(["月", "火", "水", "木", "金"]):
+            with cols_heart[i]:
+                new_heart[d] = st.checkbox(d, value=default_settings["心外"][d], key=f"heart_{d}")
+                
+        st.write("#### アブレーション枠（Ａ）")
+        cols_ab = st.columns(5)
+        new_ab = {}
+        for i, d in enumerate(["月", "火", "水", "木", "金"]):
+            with cols_ab[i]:
+                new_ab[d] = st.checkbox(d, value=default_settings["アブレーション"][d], key=f"ab_{d}")
+                
+        if st.form_submit_button("設定を保存"):
+            df_new_sys = pd.DataFrame([
+                ["心外", new_heart["月"], new_heart["火"], new_heart["水"], new_heart["木"], new_heart["金"]],
+                ["アブレーション", new_ab["月"], new_ab["火"], new_ab["水"], new_ab["木"], new_ab["金"]]
+            ], columns=["項目", "月", "火", "水", "木", "金"])
+            res = overwrite_data("システム設定", df_new_sys, ["項目", "月", "火", "水", "木", "金"])
+            if res:
+                st.success("システム設定を保存しました。")
+                default_settings["心外"] = new_heart
+                default_settings["アブレーション"] = new_ab
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### 機能A：1ヶ月一括ドラフト作成（ベース作り）")
     st.info("指定した月の1日〜月末までのシフトを自動生成し、スプレッドシートに保存します。\n※既に該当月のデータがある場合は、対象月のデータがすべて「洗い替え（上書き）」されます。")
@@ -826,8 +883,13 @@ def page_shift_creation():
                         required_tasks = ["日勤"]
                     else:
                         required_tasks = ["カ", "Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ"]
-                        if dt.weekday() == 0: required_tasks.extend(["ＨＭ", "Ｈサ"])
-                        elif dt.weekday() == 3: required_tasks.extend(["ＨＭ", "Ｈサ", "Ａ", "Ａ"])
+                        week_cols = ["月", "火", "水", "木", "金"]
+                        if 0 <= dt.weekday() <= 4:
+                            day_str = week_cols[dt.weekday()]
+                            if default_settings["心外"][day_str]:
+                                required_tasks.extend(["ＨＭ", "Ｈサ"])
+                            if default_settings["アブレーション"][day_str]:
+                                required_tasks.extend(["Ａ", "Ａ"])
                             
                     if d_task_assigned and "Ｄ" in required_tasks:
                         required_tasks.remove("Ｄ")
