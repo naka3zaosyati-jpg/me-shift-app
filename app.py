@@ -865,22 +865,23 @@ def page_shift_creation():
             with st.spinner(f"{target_year}年{target_month}月のドラフトを作成中..."):
                 df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
                 if not df_staff.empty:
-                    df_staff = df_staff[df_staff["氏名"].astype(str).str.strip() != ""]
-                    df_staff = df_staff[~df_staff["氏名"].astype(str).str.lower().isin(["none", "nan"])]
+                    df_staff["氏名"] = df_staff["氏名"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
+                    df_staff = df_staff[df_staff["氏名"] != ""]
+                    df_staff = df_staff[~df_staff["氏名"].str.lower().isin(["none", "nan"])]
                 
                 df_request = fetch_data("希望入力", COLS_REQUEST)
-                staff_list = df_staff["氏名"].astype(str).str.strip().tolist() if not df_staff.empty else []
+                staff_list = df_staff["氏名"].tolist() if not df_staff.empty else []
                 
                 part_time_staff = []
                 staff_ope_dict = {}
                 staff_angio_dict = {}
                 if "雇用形態" in df_staff.columns:
-                    df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.strip()
+                    df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
                     part_time_staff = df_staff[df_staff["雇用形態"] == "非常勤"]["氏名"].tolist()
                 
                 if not df_staff.empty:
                     for _, row in df_staff.iterrows():
-                        sname = str(row["氏名"]).strip()
+                        sname = row["氏名"]
                         staff_ope_dict[sname] = str(row["OPE習熟度"]).strip()
                         staff_angio_dict[sname] = str(row["アンギオ習熟度"]).strip()
                 
@@ -889,10 +890,11 @@ def page_shift_creation():
                 req_night_shift = {}
                 if not df_request.empty:
                     df_request["日時_date"] = pd.to_datetime(df_request["日時"], errors="coerce").dt.date
-                    df_request["氏名"] = df_request["氏名"].astype(str).str.strip()
+                    df_request["氏名"] = df_request["氏名"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
+                    df_request["区分"] = df_request["区分"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
                     for _, row in df_request.dropna(subset=["日時_date"]).iterrows():
                         r_date = row["日時_date"]
-                        kubun = str(row["区分"]).strip()
+                        kubun = row["区分"]
                         staff_n = row["氏名"]
                         
                         if "×" in kubun or "年" in kubun:
@@ -916,9 +918,10 @@ def page_shift_creation():
                 df_history = fetch_data("確定勤務表", COLS_SHIFT)
                 if not df_history.empty:
                     df_history["日時_date"] = pd.to_datetime(df_history["日時"], errors="coerce").dt.date
+                    df_history["氏名"] = df_history["氏名"].astype(str).str.replace('　', '').str.replace(' ', '').str.strip()
                     for _, row in df_history.dropna(subset=["日時_date"]).iterrows():
                         h_date = row["日時_date"]
-                        s_name = str(row["氏名"]).strip()
+                        s_name = row["氏名"]
                         t_name = str(row["割り当て業務"]).strip()
                         if s_name not in staff_list: continue
                         
