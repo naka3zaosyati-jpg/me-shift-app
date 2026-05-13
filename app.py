@@ -886,7 +886,7 @@ def page_shift_creation():
                         staff_ope_dict[sname] = str(row["OPE習熟度"]).strip()
                         staff_angio_dict[sname] = str(row["アンギオ習熟度"]).strip()
                 
-                # 希望データの取得とデータ型の厳密な照合
+                # 【1. 日付照合の絶対確実化】希望データの取得とデータ型の厳密な照合
                 req_unavailable = {}
                 req_night_shift = {}
                 if not df_request.empty:
@@ -894,16 +894,16 @@ def page_shift_creation():
                     df_request["氏名"] = df_request["氏名"].astype(str).str.replace(r'[\s　]+', '', regex=True)
                     df_request["区分"] = df_request["区分"].astype(str).str.replace(r'[\s　]+', '', regex=True)
                     for _, row in df_request.dropna(subset=["日時_date"]).iterrows():
-                        r_date = row["日時_date"]
+                        r_date_str = row["日時_date"].strftime("%Y-%m-%d")
                         kubun = row["区分"]
                         staff_n = row["氏名"]
                         
                         if "×" in kubun or "年" in kubun:
-                            if r_date not in req_unavailable: req_unavailable[r_date] = []
-                            req_unavailable[r_date].append(staff_n)
+                            if r_date_str not in req_unavailable: req_unavailable[r_date_str] = []
+                            req_unavailable[r_date_str].append(staff_n)
                         elif "△" in kubun:
-                            if r_date not in req_night_shift: req_night_shift[r_date] = []
-                            req_night_shift[r_date].append(staff_n)
+                            if r_date_str not in req_night_shift: req_night_shift[r_date_str] = []
+                            req_night_shift[r_date_str].append(staff_n)
                                 
                 _, num_days = calendar.monthrange(target_year, target_month)
                 draft_data = []
@@ -912,8 +912,9 @@ def page_shift_creation():
                 pre_assigned_shukuchoku = {s: set() for s in staff_list}
                 for d in range(1, num_days + 1):
                     dt = datetime.date(target_year, target_month, d)
+                    d_str = dt.strftime("%Y-%m-%d")
                     abs_day = (dt - datetime.date(2020, 1, 1)).days
-                    wishers = [s for s in req_night_shift.get(dt, []) if s in staff_list and s not in part_time_staff]
+                    wishers = [s for s in req_night_shift.get(d_str, []) if s in staff_list and s not in part_time_staff]
                     for w in wishers:
                         pre_assigned_shukuchoku[w].add(abs_day)
                 
@@ -1005,22 +1006,13 @@ def page_shift_creation():
                     current_abs_day = (dt - datetime.date(2020, 1, 1)).days
                     is_off_day = is_off_day_func(dt)
                     
-                    # 1. 休みの絶対除外（最優先処理）
-                    # まず全員を can_work に入れる
-                    can_work = staff_list.copy()
-                    
-                    # 「×」「年」の人を完全に除外
-                    unavailable = req_unavailable.get(dt, [])
-                    can_work = [s for s in can_work if s not in unavailable]
-                    
-                    # 休日は非常勤を除外
-                    if is_off_day:
-                        can_work = [s for s in can_work if s not in part_time_staff]
+                    # 【2. 1日の割り当て処理の完全分離構造】
+                    # ① 休みの絶対除外（文字列マッチングで確実に）
+                    unavailable = req_unavailable.get(d_str, [])
+                    can_work = [s for s in staff_list if s not in unavailable]
+                    daily_tasks = {s: [] for s in can_work} # リストでタスクを管理
 
-                    assigned_tasks_today = [] # [staff, task]
-                    
                     # 必要な業務の設定
-                    required_tasks = []
                     opes_gyomu = ope_gyomu_dict.get(d_str, [])
                     heart_count = opes_gyomu.count("心外")
                     ablation_count = opes_gyomu.count("アブレーション")
@@ -1028,10 +1020,7 @@ def page_shift_creation():
                     c_needed = 0
                     is_ablation_day = False
                     
-                    if is_off_day:
-                        required_tasks = []
-                    else:
-                        required_tasks = ["Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ"]
+                    if not is_off_day:
                         week_cols = ["月", "火", "水", "木", "金"]
                         if 0 <= dt.weekday() <= 4:
                             day_str = week_cols[dt.weekday()]
@@ -1041,188 +1030,209 @@ def page_shift_creation():
                         is_ablation_day = ablation_count > 0
                         if is_ablation_day: c_needed = 0
                         else: c_needed = 1
-                    
-                    if d_task_assigned_this_month and "Ｄ" in required_tasks:
-                        required_tasks.remove("Ｄ")
 
                     dummy_counter = 0
 
-                    # 順序：非常勤 ➔ アブ ➔ 心外 ➔ カテ ➔ 宿直(1名確定) ➔ 基本業務
-
-                    # --- ① 非常勤 ---
-                    if not is_off_day and "Ｍ" in required_tasks:
-                        available_part_timers = [s for s in can_work if s in part_time_staff]
-                        if available_part_timers:
-                            pt_staff = random.choice(available_part_timers)
-                            assigned_tasks_today.append([pt_staff, "Ｍ"])
-                            increment_annual_count(pt_staff, "Ｍ")
-                            can_work.remove(pt_staff)
-                            required_tasks.remove("Ｍ")
-
-                    # --- ② アブレーション ---
-                    ablation_slots = 2 if is_ablation_day else 0
-                    for _ in range(ablation_slots):
-                        cands = [s for s in can_work if safe_int(staff_angio_dict.get(s, 0)) >= 3]
-                        if cands:
-                            cands.sort(key=lambda s: get_annual_count(s, "Ａ"))
-                            chosen = cands[0]
-                            assigned_tasks_today.append([chosen, "Ａ"])
-                            increment_annual_count(chosen, "Ａ")
-                            can_work.remove(chosen)
-                        else:
-                            assigned_tasks_today.append([f"スタッフ{chr(65 + dummy_counter)}", "Ａ"])
-                            dummy_counter += 1
-
-                    # --- ③ 心外 ---
-                    for _ in range(heart_count):
-                        hm_cands = [s for s in can_work if staff_ope_dict.get(s, 'A') >= 'C' and hm_min_counts.get(s, 0) > 0]
-                        hm_staff = None
-                        if hm_cands:
-                            hm_cands.sort(key=lambda s: (
-                                1 if monthly_hm_count.get(s, 0) >= hm_min_counts.get(s, 0) else 0,
-                                get_annual_count(s, "心外")
-                            ))
-                            hm_staff = hm_cands[0]
-                            
-                        picked_h_subs = []
-                        if hm_staff:
-                            hm_rank = staff_ope_dict.get(hm_staff, 'A')
-                            if hm_rank == 'C':
-                                d_cands = [s for s in can_work if staff_ope_dict.get(s, 'A') >= 'D' and s != hm_staff]
-                                d_cands.sort(key=lambda s: get_annual_count(s, "心外"))
-                                if d_cands: picked_h_subs.append(d_cands[0])
-                                
-                                other_cands = [s for s in can_work if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff and s not in picked_h_subs]
-                                other_cands.sort(key=lambda s: get_annual_count(s, "心外"))
-                                if other_cands: picked_h_subs.append(other_cands[0])
-                            else:
-                                sub_cands = [s for s in can_work if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff]
-                                sub_cands.sort(key=lambda s: get_annual_count(s, "心外"))
-                                if sub_cands:
-                                    first_sub = sub_cands[0]
-                                    picked_h_subs.append(first_sub)
-                                    if staff_ope_dict.get(first_sub, 'A') == 'C':
-                                        other_cands = [s for s in can_work if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff and s not in picked_h_subs]
-                                        other_cands.sort(key=lambda s: get_annual_count(s, "心外"))
-                                        if other_cands: picked_h_subs.append(other_cands[0])
-                        
-                        if hm_staff:
-                            assigned_tasks_today.append([hm_staff, "ＨＭ"])
-                            increment_annual_count(hm_staff, "ＨＭ")
-                            monthly_hm_count[hm_staff] += 1
-                            can_work.remove(hm_staff)
-                            
-                            for h_sub in picked_h_subs:
-                                assigned_tasks_today.append([h_sub, "Ｈサ"])
-                                increment_annual_count(h_sub, "Ｈサ")
-                                can_work.remove(h_sub)
-                        else:
-                            assigned_tasks_today.append([f"スタッフ{chr(65 + dummy_counter)}", "ＨＭ"])
-                            dummy_counter += 1
-                            assigned_tasks_today.append([f"スタッフ{chr(65 + dummy_counter)}", "Ｈサ"])
-                            dummy_counter += 1
-
-                    # --- ④ カテ ---
-                    for _ in range(c_needed):
-                        cands = [s for s in can_work if safe_int(staff_angio_dict.get(s, 0)) >= 2]
-                        if cands:
-                            cands.sort(key=lambda s: get_annual_count(s, "カ"))
-                            chosen = cands[0]
-                            assigned_tasks_today.append([chosen, "カ"])
-                            increment_annual_count(chosen, "カ")
-                            can_work.remove(chosen)
-                        else:
-                            assigned_tasks_today.append([f"スタッフ{chr(65 + dummy_counter)}", "カ"])
-                            dummy_counter += 1
-
-                    # --- ⑤ 宿直（1日1名制限・最優先） ---
-                    night_assigned = False
+                    # 宿直の候補 (休みと非常勤以外)
+                    night_candidates = [s for s in can_work if s not in part_time_staff]
                     
-                    # 宿直の候補は「休み」と「非常勤」以外全員。
-                    # can_work はすでにこれらを除外しているので、基本は can_work をベースにするが、
-                    # すでに心外やカテに割り当てられた人も、平日なら宿直可能。
-                    # なので staff_list から unavailable と part_time_staff を引いたリストを使う。
-                    night_candidates = [s for s in staff_list if s not in unavailable and s not in part_time_staff]
-                    
-                    # 「△」希望者を最優先
-                    wishers = [s for s in req_night_shift.get(dt, []) if s in night_candidates]
+                    # 「△」希望者
+                    wishers = [s for s in req_night_shift.get(d_str, []) if s in night_candidates]
                     valid_wishers = [s for s in wishers if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=False)]
-                    
-                    if is_off_day:
-                        valid_wishers.sort(key=lambda s: (monthly_holiday_night_count.get(s, 0), get_annual_count(s, "休日出勤"), get_annual_count(s, "宿直")))
-                    else:
-                        valid_wishers.sort(key=lambda s: (monthly_night_count.get(s, 0), get_annual_count(s, "宿直")))
 
-                    for wisher in valid_wishers:
-                        night_staff = wisher
-                        assigned_tasks_today.append([night_staff, "宿直"])
-                        increment_annual_count(night_staff, "宿直")
-                        staff_night_holiday_abs_days[night_staff].add(current_abs_day)
-                        monthly_night_count[night_staff] += 1
+                    # ② 休日の場合
+                    if is_off_day:
+                        # 休日は非常勤を除外
+                        can_work_holiday = [s for s in night_candidates]
                         
-                        if is_off_day:
-                            assigned_tasks_today.append([night_staff, "日勤"])
+                        night_assigned = False
+                        valid_wishers.sort(key=lambda s: (monthly_holiday_night_count.get(s, 0), get_annual_count(s, "休日出勤"), get_annual_count(s, "宿直")))
+                        
+                        for wisher in valid_wishers:
+                            night_staff = wisher
+                            daily_tasks[night_staff].append("宿直\n日勤")
+                            increment_annual_count(night_staff, "宿直")
                             increment_annual_count(night_staff, "日勤")
                             increment_annual_count(night_staff, "休日出勤")
+                            staff_night_holiday_abs_days[night_staff].add(current_abs_day)
                             staff_assigned_holiday_days[night_staff].add(d)
+                            monthly_night_count[night_staff] += 1
                             monthly_holiday_night_count[night_staff] += 1
-                            # 休日は日中業務がないので can_work から除外（フリー等にならないように）
-                            if night_staff in can_work:
-                                can_work.remove(night_staff)
-                        
-                        night_assigned = True
-                        break # 必ず1名で抜ける（複数割り当て防止）
-
-                    # 「△」がいない場合、ランダムに1名選出
-                    if not night_assigned:
-                        valid_night = [s for s in night_candidates if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4]
-                        
-                        if is_off_day:
+                            night_assigned = True
+                            break # 必ず1名で抜ける
+                            
+                        if not night_assigned:
+                            valid_night = [s for s in can_work_holiday if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4]
+                            
                             valid_night_holiday = [s for s in valid_night if monthly_holiday_night_count.get(s, 0) < 1 and not has_worked_in_block(s, d)]
                             if not valid_night_holiday:
-                                valid_night_holiday = [s for s in night_candidates if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4 and monthly_holiday_night_count.get(s, 0) < 2 and not has_worked_in_block(s, d)]
+                                valid_night_holiday = [s for s in can_work_holiday if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4 and monthly_holiday_night_count.get(s, 0) < 2 and not has_worked_in_block(s, d)]
                             if not valid_night_holiday:
-                                valid_night_holiday = [s for s in night_candidates if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4 and not has_worked_in_block(s, d)]
+                                valid_night_holiday = [s for s in can_work_holiday if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4 and not has_worked_in_block(s, d)]
                             valid_night = valid_night_holiday
-                        
-                        if not valid_night:
-                            valid_night = [s for s in night_candidates if monthly_night_count.get(s, 0) < 4]
-                        if not valid_night:
-                            valid_night = night_candidates
                             
-                        if is_off_day:
+                            if not valid_night:
+                                valid_night = [s for s in can_work_holiday if monthly_night_count.get(s, 0) < 4]
+                            if not valid_night:
+                                valid_night = can_work_holiday
+                                
                             valid_night.sort(key=lambda s: (monthly_holiday_night_count.get(s, 0), get_annual_count(s, "休日出勤"), get_annual_count(s, "宿直")))
-                        else:
-                            valid_night.sort(key=lambda s: (monthly_night_count.get(s, 0), get_annual_count(s, "宿直")))
                             
-                        for cand in valid_night:
-                            night_staff = cand
-                            assigned_tasks_today.append([night_staff, "宿直"])
+                            for cand in valid_night:
+                                night_staff = cand
+                                daily_tasks[night_staff].append("宿直\n日勤")
+                                increment_annual_count(night_staff, "宿直")
+                                increment_annual_count(night_staff, "日勤")
+                                increment_annual_count(night_staff, "休日出勤")
+                                staff_night_holiday_abs_days[night_staff].add(current_abs_day)
+                                staff_assigned_holiday_days[night_staff].add(d)
+                                monthly_night_count[night_staff] += 1
+                                monthly_holiday_night_count[night_staff] += 1
+                                night_assigned = True
+                                break # 必ず1名で抜ける
+
+                    # ③ 平日の場合
+                    else:
+                        available_for_tasks = can_work.copy()
+
+                        # 1. 宿直(1名)の決定
+                        night_assigned = False
+                        valid_wishers.sort(key=lambda s: (monthly_night_count.get(s, 0), get_annual_count(s, "宿直")))
+                        
+                        for wisher in valid_wishers:
+                            night_staff = wisher
+                            daily_tasks[night_staff].append("宿直")
                             increment_annual_count(night_staff, "宿直")
                             staff_night_holiday_abs_days[night_staff].add(current_abs_day)
                             monthly_night_count[night_staff] += 1
-                            
-                            if is_off_day:
-                                assigned_tasks_today.append([night_staff, "日勤"])
-                                increment_annual_count(night_staff, "日勤")
-                                increment_annual_count(night_staff, "休日出勤")
-                                staff_assigned_holiday_days[night_staff].add(d)
-                                monthly_holiday_night_count[night_staff] += 1
-                                if night_staff in can_work:
-                                    can_work.remove(night_staff)
-                            
                             night_assigned = True
-                            break # 必ず1名で抜ける（複数割り当て防止）
+                            break
+                            
+                        if not night_assigned:
+                            valid_night = [s for s in night_candidates if can_do_night_or_holiday(s, current_abs_day, is_random_assignment=True) and monthly_night_count.get(s, 0) < 4]
+                            if not valid_night:
+                                valid_night = [s for s in night_candidates if monthly_night_count.get(s, 0) < 4]
+                            if not valid_night:
+                                valid_night = night_candidates
+                                
+                            valid_night.sort(key=lambda s: (monthly_night_count.get(s, 0), get_annual_count(s, "宿直")))
+                            for cand in valid_night:
+                                night_staff = cand
+                                daily_tasks[night_staff].append("宿直")
+                                increment_annual_count(night_staff, "宿直")
+                                staff_night_holiday_abs_days[night_staff].add(current_abs_day)
+                                monthly_night_count[night_staff] += 1
+                                night_assigned = True
+                                break
 
-                    # --- ⑥ 基本業務 ---
-                    if not is_off_day:
+                        # 2. 非常勤の固定
+                        required_tasks = ["Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ"]
+                        if d_task_assigned_this_month:
+                            if "Ｄ" in required_tasks:
+                                required_tasks.remove("Ｄ")
+
+                        available_part_timers = [s for s in available_for_tasks if s in part_time_staff]
+                        if available_part_timers and "Ｍ" in required_tasks:
+                            pt_staff = random.choice(available_part_timers)
+                            daily_tasks[pt_staff].append("Ｍ")
+                            increment_annual_count(pt_staff, "Ｍ")
+                            available_for_tasks.remove(pt_staff)
+                            required_tasks.remove("Ｍ")
+
+                        # 3. アブレーション / 心外 / カテ の決定
+                        # アブレーション
+                        ablation_slots = 2 if is_ablation_day else 0
+                        for _ in range(ablation_slots):
+                            cands = [s for s in available_for_tasks if safe_int(staff_angio_dict.get(s, 0)) >= 3]
+                            if cands:
+                                cands.sort(key=lambda s: get_annual_count(s, "Ａ"))
+                                chosen = cands[0]
+                                daily_tasks[chosen].append("Ａ")
+                                increment_annual_count(chosen, "Ａ")
+                                available_for_tasks.remove(chosen)
+                            else:
+                                dummy_name = f"スタッフ{chr(65 + dummy_counter)}"
+                                if dummy_name not in daily_tasks: daily_tasks[dummy_name] = []
+                                daily_tasks[dummy_name].append("Ａ")
+                                dummy_counter += 1
+
+                        # 心外
+                        for _ in range(heart_count):
+                            hm_cands = [s for s in available_for_tasks if staff_ope_dict.get(s, 'A') >= 'C' and hm_min_counts.get(s, 0) > 0]
+                            hm_staff = None
+                            if hm_cands:
+                                hm_cands.sort(key=lambda s: (
+                                    1 if monthly_hm_count.get(s, 0) >= hm_min_counts.get(s, 0) else 0,
+                                    get_annual_count(s, "心外")
+                                ))
+                                hm_staff = hm_cands[0]
+                                
+                            picked_h_subs = []
+                            if hm_staff:
+                                hm_rank = staff_ope_dict.get(hm_staff, 'A')
+                                if hm_rank == 'C':
+                                    d_cands = [s for s in available_for_tasks if staff_ope_dict.get(s, 'A') >= 'D' and s != hm_staff]
+                                    d_cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                                    if d_cands: picked_h_subs.append(d_cands[0])
+                                    
+                                    other_cands = [s for s in available_for_tasks if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff and s not in picked_h_subs]
+                                    other_cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                                    if other_cands: picked_h_subs.append(other_cands[0])
+                                else:
+                                    sub_cands = [s for s in available_for_tasks if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff]
+                                    sub_cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                                    if sub_cands:
+                                        first_sub = sub_cands[0]
+                                        picked_h_subs.append(first_sub)
+                                        if staff_ope_dict.get(first_sub, 'A') == 'C':
+                                            other_cands = [s for s in available_for_tasks if staff_ope_dict.get(s, 'A') >= 'C' and s != hm_staff and s not in picked_h_subs]
+                                            other_cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                                            if other_cands: picked_h_subs.append(other_cands[0])
+                            
+                            if hm_staff:
+                                daily_tasks[hm_staff].append("ＨＭ")
+                                increment_annual_count(hm_staff, "ＨＭ")
+                                monthly_hm_count[hm_staff] += 1
+                                available_for_tasks.remove(hm_staff)
+                                
+                                for h_sub in picked_h_subs:
+                                    daily_tasks[h_sub].append("Ｈサ")
+                                    increment_annual_count(h_sub, "Ｈサ")
+                                    available_for_tasks.remove(h_sub)
+                            else:
+                                dummy_name_1 = f"スタッフ{chr(65 + dummy_counter)}"
+                                if dummy_name_1 not in daily_tasks: daily_tasks[dummy_name_1] = []
+                                daily_tasks[dummy_name_1].append("ＨＭ")
+                                dummy_counter += 1
+                                
+                                dummy_name_2 = f"スタッフ{chr(65 + dummy_counter)}"
+                                if dummy_name_2 not in daily_tasks: daily_tasks[dummy_name_2] = []
+                                daily_tasks[dummy_name_2].append("Ｈサ")
+                                dummy_counter += 1
+
+                        # カテ
+                        for _ in range(c_needed):
+                            cands = [s for s in available_for_tasks if safe_int(staff_angio_dict.get(s, 0)) >= 2]
+                            if cands:
+                                cands.sort(key=lambda s: get_annual_count(s, "カ"))
+                                chosen = cands[0]
+                                daily_tasks[chosen].append("カ")
+                                increment_annual_count(chosen, "カ")
+                                available_for_tasks.remove(chosen)
+                            else:
+                                dummy_name = f"スタッフ{chr(65 + dummy_counter)}"
+                                if dummy_name not in daily_tasks: daily_tasks[dummy_name] = []
+                                daily_tasks[dummy_name].append("カ")
+                                dummy_counter += 1
+
+                        # 4. 基本業務 (I,O,R,D) の穴埋め
                         def is_high_skill(s):
                             return staff_ope_dict.get(s, 'A') >= 'C' or safe_int(staff_angio_dict.get(s, 0)) >= 2
 
                         random.shuffle(required_tasks)
                         for task in required_tasks:
-                            if can_work:
-                                cands = can_work.copy()
+                            if available_for_tasks:
+                                cands = available_for_tasks.copy()
                                 if task == "Ｄ":
                                     valid_d = [s for s in cands if monthly_d_count.get(s, 0) == 0]
                                     if valid_d: cands = valid_d
@@ -1233,42 +1243,45 @@ def page_shift_creation():
                                 filtered_cands.sort(key=lambda s: (is_high_skill(s), get_annual_count(s, task)))
                                 
                                 chosen = filtered_cands[0]
-                                assigned_tasks_today.append([chosen, task])
+                                daily_tasks[chosen].append(task)
                                 increment_annual_count(chosen, task)
-                                can_work.remove(chosen)
+                                available_for_tasks.remove(chosen)
                                 
                                 if task == "Ｄ":
                                     d_task_assigned_this_month = True
                                     monthly_d_count[chosen] += 1
                             else:
-                                assigned_tasks_today.append([f"スタッフ{chr(65 + dummy_counter)}", task])
+                                dummy_name = f"スタッフ{chr(65 + dummy_counter)}"
+                                if dummy_name not in daily_tasks: daily_tasks[dummy_name] = []
+                                daily_tasks[dummy_name].append(task)
                                 dummy_counter += 1
                                 if task == "Ｄ": d_task_assigned_this_month = True
 
-                    # --- ⑦ フリー ---
-                    if not is_off_day:
-                        for leftover in can_work:
-                            assigned_tasks_today.append([leftover, "フリー"])
+                        # フリー
+                        for leftover in available_for_tasks:
+                            daily_tasks[leftover].append("フリー")
                             increment_annual_count(leftover, "フリー")
-                            
-                    # --- データ書き込みと履歴保持 ---
-                    for row in assigned_tasks_today:
-                        staff = row[0]
-                        task = row[1]
-                        draft_data.append([d_str, staff, task])
-                        if not staff.startswith("スタッフ") and task not in ["宿直", "日勤", "フリー"]:
-                            yesterday_tasks[staff] = task
 
-                    # --- 今日分の並び替え（宿直を後ろにするなど） ---
-                    today_draft = [r for r in draft_data if r[0] == d_str]
-                    draft_data = [r for r in draft_data if r[0] != d_str]
-                    def sort_key(row):
-                        t = row[2]
-                        if t == "宿直": return 99 if not is_off_day else -1
-                        if t == "日勤": return 1
-                        return 0
-                    today_draft.sort(key=lambda r: (r[1], sort_key(r)))
-                    draft_data.extend(today_draft)
+                    # ④ 最終結合
+                    for staff, tasks in daily_tasks.items():
+                        if not tasks:
+                            continue
+                        
+                        sorted_tasks = []
+                        shukuchoku_task = None
+                        for t in tasks:
+                            if "宿直" in t:
+                                shukuchoku_task = t
+                            else:
+                                sorted_tasks.append(t)
+                                if not staff.startswith("スタッフ") and t not in ["フリー"]:
+                                    yesterday_tasks[staff] = t
+                                    
+                        if shukuchoku_task:
+                            sorted_tasks.append(shukuchoku_task)
+                            
+                        joined_task = "\n".join(sorted_tasks)
+                        draft_data.append([d_str, staff, joined_task])
 
                 if draft_data:
                     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
