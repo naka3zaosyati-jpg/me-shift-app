@@ -42,17 +42,16 @@ TASK_COLORS = {
     "Ｒ": {"bg": "#FFC0CB", "text": "black"},
     "宿直": {"bg": "transparent", "text": "#800080", "fw": "bold"},
     "日勤": {"bg": "#FD7E14", "text": "white"},
-    "フリー": {"bg": "#E2E3E5", "text": "black"}, # 余剰スタッフ用
+    "フリー": {"bg": "#E2E3E5", "text": "black"},
 }
 
 HOLIDAY_COLORS = {
-    "土": "#EBF5FB",    # 薄い青
-    "日祝": "#FDEDEC",  # 薄い赤
-    "今日": "#FFF3CD"   # 薄い黄色
+    "土": "#EBF5FB",
+    "日祝": "#FDEDEC",
+    "今日": "#FFF3CD"
 }
 
 def get_styled_task_html(text, is_calendar=False):
-    """カレンダー用HTMLバッジ生成"""
     if not text: return ""
     items = text.split('\n') if '\n' in text else text.split('<br>')
     res = []
@@ -83,7 +82,6 @@ def get_styled_task_html(text, is_calendar=False):
     return "<br>".join(res)
 
 def style_shift_matrix(df, today_date):
-    """Pandas Styler 用の関数"""
     styles = pd.DataFrame('', index=df.index, columns=df.columns)
     for col in df.columns:
         is_sat = "土" in col
@@ -114,7 +112,6 @@ def style_shift_matrix(df, today_date):
             styles.at[row, col] = f"background-color: {matched_bg}; color: {matched_color}; font-weight: {matched_fw}; text-align: center; white-space: pre-wrap;"
     return styles
 
-# --- ヘルパー関数 ---
 def safe_int(val):
     if pd.isna(val) or val == "": return 0
     try: return int(float(val))
@@ -128,7 +125,6 @@ def parse_date(date_val):
     except Exception:
         return None
 
-# --- Google Sheets API 接続 ---
 def get_gspread_client():
     try:
         if "gcp_service_account" in st.secrets:
@@ -211,7 +207,6 @@ def overwrite_data(sheet_name, df, columns):
         return res
     except Exception: return False
 
-# --- カラム定義 ---
 COLS_STAFF = ["氏名", "役職", "OPE習熟度", "アンギオ習熟度", "総合コード", "人工心肺メイン回数", "人工心肺サブ回数", "アブレーション回数", "カテ回数", "雇用形態"]
 COLS_REQUEST = ["日時", "氏名", "区分", "コメント"]
 COLS_OPE_MASTER = ["術式名", "術式レベル"]
@@ -220,7 +215,6 @@ COLS_TASK_MASTER = ["略語", "業務名"]
 COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
 COLS_PROFICIENCY_MASTER = ["区分", "ランク", "定義"]
 
-# --- 希望休入力UI (共通モジュール) ---
 def render_leave_request_ui():
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.write("### 🗓️ 希望休入力（月間カレンダー）")
@@ -255,16 +249,14 @@ def render_leave_request_ui():
     
     df_request_all = fetch_data("希望入力", COLS_REQUEST)
     if not df_request_all.empty:
-        for _, row in df_request_all.iterrows():
-            d_key = parse_date(row["日時"])
-            if d_key:
-                try:
-                    dt = datetime.datetime.strptime(d_key, "%Y-%m-%d")
-                    if dt.year == req_year and dt.month == req_month:
-                        s_name = str(row["氏名"]).strip()
-                        kubun = str(row["区分"]).strip()
-                        if s_name in req_matrix.index: req_matrix.at[s_name, cols_req_strings[dt.day - 1]] = kubun
-                except Exception: pass
+        df_request_all["日時_date"] = pd.to_datetime(df_request_all["日時"], errors="coerce").dt.date
+        df_request_all["氏名"] = df_request_all["氏名"].astype(str).str.strip()
+        for _, row in df_request_all.dropna(subset=["日時_date"]).iterrows():
+            dt = row["日時_date"]
+            if dt.year == req_year and dt.month == req_month:
+                s_name = row["氏名"]
+                kubun = str(row["区分"]).strip()
+                if s_name in req_matrix.index: req_matrix.at[s_name, cols_req_strings[dt.day - 1]] = kubun
                 
     column_config_req = {}
     for col in cols_req_strings:
@@ -286,8 +278,9 @@ def render_leave_request_ui():
                         
             month_prefix = f"{req_year}-{req_month:02d}"
             if not df_request_all.empty:
-                if "_date_str" not in df_request_all.columns: df_request_all["_date_str"] = df_request_all["日時"].apply(parse_date)
-                df_remain = df_request_all[~df_request_all["_date_str"].astype(str).str.startswith(month_prefix)].drop(columns=["_date_str"], errors="ignore")
+                df_request_all["_date_obj"] = pd.to_datetime(df_request_all["日時"], errors="coerce").dt.date
+                df_request_all["_date_str"] = df_request_all["_date_obj"].apply(lambda x: x.strftime("%Y-%m") if pd.notnull(x) else "")
+                df_remain = df_request_all[df_request_all["_date_str"] != month_prefix].drop(columns=["_date_obj", "_date_str", "日時_date"], errors="ignore")
             else: df_remain = pd.DataFrame(columns=COLS_REQUEST)
                 
             df_new_req_month = pd.DataFrame(new_req_list, columns=COLS_REQUEST)
@@ -296,9 +289,6 @@ def render_leave_request_ui():
             if res: st.success(f"{req_year}年{req_month}月の希望休を一括保存しました！")
             else: st.error("保存に失敗しました。")
     st.markdown('</div>', unsafe_allow_html=True)
-
-
-# --- ページUI コンポーネント ---
 
 def page_home(is_admin=False):
     title = "① ホーム（勤務表確認・編集）" if is_admin else "① 勤務表の確認（閲覧のみ）"
@@ -326,13 +316,13 @@ def page_home(is_admin=False):
     
     shift_dict = {}
     if not df_shift.empty:
-        for _, row in df_shift.iterrows():
-            d_key = parse_date(row["日時"])
-            if d_key:
-                staff_name = str(row['氏名']).strip()
-                staff_info = f"{staff_name} ({row['割り当て業務']})"
-                if d_key not in shift_dict: shift_dict[d_key] = []
-                shift_dict[d_key].append((staff_name, staff_info))
+        df_shift["日時_date"] = pd.to_datetime(df_shift["日時"], errors="coerce").dt.date
+        for _, row in df_shift.dropna(subset=["日時_date"]).iterrows():
+            d_key = row["日時_date"].strftime("%Y-%m-%d")
+            staff_name = str(row['氏名']).strip()
+            staff_info = f"{staff_name} ({row['割り当て業務']})"
+            if d_key not in shift_dict: shift_dict[d_key] = []
+            shift_dict[d_key].append((staff_name, staff_info))
                 
     def get_staff_idx(name):
         try: return staff_list.index(name)
@@ -344,12 +334,12 @@ def page_home(is_admin=False):
 
     ope_dict = {}
     if not df_ope.empty:
-        for _, row in df_ope.iterrows():
-            d_key = parse_date(row["日時"])
-            if d_key:
-                ope_info = str(row['術式'])
-                if d_key not in ope_dict: ope_dict[d_key] = []
-                ope_dict[d_key].append(ope_info)
+        df_ope["日時_date"] = pd.to_datetime(df_ope["日時"], errors="coerce").dt.date
+        for _, row in df_ope.dropna(subset=["日時_date"]).iterrows():
+            d_key = row["日時_date"].strftime("%Y-%m-%d")
+            ope_info = str(row['術式'])
+            if d_key not in ope_dict: ope_dict[d_key] = []
+            ope_dict[d_key].append(ope_info)
                 
     calendar_css = """
     <style>
@@ -447,22 +437,18 @@ def page_home(is_admin=False):
             shift_matrix.fillna("", inplace=True)
             
             if not df_shift.empty:
-                for _, row in df_shift.iterrows():
-                    d_key = parse_date(row["日時"])
-                    if d_key:
-                        try:
-                            dt = datetime.datetime.strptime(d_key, "%Y-%m-%d")
-                            if dt.year == selected_year and dt.month == selected_month:
-                                staff_name = str(row["氏名"]).strip()
-                                duty = str(row["割り当て業務"]).strip()
-                                header_col = cols_strings[dt.day - 1]
-                                if staff_name in shift_matrix.index or staff_name.startswith("スタッフ"):
-                                    if staff_name not in shift_matrix.index:
-                                        shift_matrix.loc[staff_name] = ""
-                                    curr_val = shift_matrix.at[staff_name, header_col]
-                                    if curr_val: shift_matrix.at[staff_name, header_col] = curr_val + "\\n" + duty
-                                    else: shift_matrix.at[staff_name, header_col] = duty
-                        except Exception: pass
+                for _, row in df_shift.dropna(subset=["日時_date"]).iterrows():
+                    dt = row["日時_date"]
+                    if dt.year == selected_year and dt.month == selected_month:
+                        staff_name = str(row["氏名"]).strip()
+                        duty = str(row["割り当て業務"]).strip()
+                        header_col = cols_strings[dt.day - 1]
+                        if staff_name in shift_matrix.index or staff_name.startswith("スタッフ"):
+                            if staff_name not in shift_matrix.index:
+                                shift_matrix.loc[staff_name] = ""
+                            curr_val = shift_matrix.at[staff_name, header_col]
+                            if curr_val: shift_matrix.at[staff_name, header_col] = curr_val + "\\n" + duty
+                            else: shift_matrix.at[staff_name, header_col] = duty
 
             base_options = ["", "フリー", "ＨＭ", "Ｈサ", "Ａ", "カ", "Ｉ", "Ｏ", "Ｍ", "Ｄ", "Ｒ", "日勤", "宿直"]
             combos = [o + "\\n宿直" for o in base_options if o and o != "宿直"]
@@ -495,9 +481,9 @@ def page_home(is_admin=False):
                         df_shift_all = fetch_data("確定勤務表", COLS_SHIFT)
                         month_prefix = f"{selected_year}-{selected_month:02d}"
                         if not df_shift_all.empty:
-                            if "_date_str" not in df_shift_all.columns:
-                                df_shift_all["_date_str"] = df_shift_all["日時"].apply(parse_date)
-                            df_remain = df_shift_all[~df_shift_all["_date_str"].astype(str).str.startswith(month_prefix)].drop(columns=["_date_str"], errors="ignore")
+                            df_shift_all["_date_obj"] = pd.to_datetime(df_shift_all["日時"], errors="coerce").dt.date
+                            df_shift_all["_date_str"] = df_shift_all["_date_obj"].apply(lambda x: x.strftime("%Y-%m") if pd.notnull(x) else "")
+                            df_remain = df_shift_all[df_shift_all["_date_str"] != month_prefix].drop(columns=["_date_obj", "_date_str"], errors="ignore")
                         else: df_remain = pd.DataFrame(columns=COLS_SHIFT)
                             
                         df_new_month = pd.DataFrame(new_draft, columns=COLS_SHIFT)
@@ -518,9 +504,10 @@ def page_home(is_admin=False):
             st.write(f"### 📊 {selected_year}年{selected_month}月 業務割り当て集計表")
             if not df_shift.empty:
                 df_month = df_shift.copy()
-                df_month["日時"] = df_month["日時"].apply(parse_date)
+                df_month["_date_obj"] = pd.to_datetime(df_month["日時"], errors="coerce").dt.date
+                df_month["_date_str"] = df_month["_date_obj"].apply(lambda x: x.strftime("%Y-%m") if pd.notnull(x) else "")
                 month_prefix = f"{selected_year}-{selected_month:02d}"
-                df_month = df_month[df_month["日時"].astype(str).str.startswith(month_prefix)]
+                df_month = df_month[df_month["_date_str"] == month_prefix]
                 if not df_month.empty:
                     summary_df = pd.pivot_table(df_month, index="氏名", columns="割り当て業務", aggfunc="size", fill_value=0)
                     summary_df["合計"] = summary_df.sum(axis=1)
@@ -533,9 +520,10 @@ def page_home(is_admin=False):
         st.write(f"### 📊 {selected_year}年{selected_month}月 業務割り当て集計表")
         if not df_shift.empty:
             df_month = df_shift.copy()
-            df_month["日時"] = df_month["日時"].apply(parse_date)
+            df_month["_date_obj"] = pd.to_datetime(df_month["日時"], errors="coerce").dt.date
+            df_month["_date_str"] = df_month["_date_obj"].apply(lambda x: x.strftime("%Y-%m") if pd.notnull(x) else "")
             month_prefix = f"{selected_year}-{selected_month:02d}"
-            df_month = df_month[df_month["日時"].astype(str).str.startswith(month_prefix)]
+            df_month = df_month[df_month["_date_str"] == month_prefix]
             if not df_month.empty:
                 summary_df = pd.pivot_table(df_month, index="氏名", columns="割り当て業務", aggfunc="size", fill_value=0)
                 summary_df["合計"] = summary_df.sum(axis=1)
@@ -740,15 +728,14 @@ def page_shift_creation():
     
     with st.expander("現在の自動割り当てアルゴリズム（条件）"):
         st.markdown("""
-- **優先割り当て**: 「非常勤」のスタッフは、平日は最優先で「Ｍ（ME業務）」に配置されます。
-- **必要枠の生成**: 平日は基本業務（カ, Ｉ, Ｏ, Ｍ, Ｄ, Ｒ）各1名を配置します。曜日別設定の他、「術式予定」と連動し心外・アブレーション枠が追加されます。
-- **アブレーションとカテ兼務**: アブレーション枠(2名)が生成される日は、カテ枠(1名)は生成されません。
-- **宿直（平日）**: 宿直枠は独立させず、その日の日勤者の中から選出され兼任します（週1回制限あり）。
-- **休日・祝日**: 1名体制とし日勤と宿直を兼任します（連休中は1回まで）。「△」の希望があるスタッフは最優先されます。
-- **特殊条件**: Ｄ業務は月に1回のみ配置されます。
-- **心外枠のスキル制限**: 「OPE習熟度」C以降のみ選出。HM回数設定が0の人を除外。D以降が最低1名必須（Cが含まれる場合はHサ1名追加で3名体制）。
-- **アブレーション枠のスキル制限**: 「アンギオ習熟度」3以降のみ選出されます。
-- **公平性の担保**: 全ての業務において年度ごとの年間実績が少ないスタッフを優先的に選出します。
+- **優先順位1 (休み)**: 「×」「年」のスタッフを除外。
+- **優先順位2 (宿直・1名体制希望)**: 平日・休日問わず、「△」を出している人を最優先で確定。
+- **優先順位3 (非常勤)**: 非常勤スタッフを「Ｍ」に配置。
+- **優先順位4 (アブレーション)**: 2名配置（カテ兼務。アンギオ3以上）。
+- **優先順位5 (心外 HM/Hサ)**: HM設定回数が未達の人を優先しHMを決定、後からHサを補充（OPE C以上。D以上1名、C含むなら3名体制。HM 0回設定の人は除外）。
+- **優先順位6 (カテ)**: A枠がない平日のみ1名配置（アンギオ2以上）。
+- **優先順位7 (残りの宿直)**: ステップ2で決まらなかった場合のみ、回数が少ない人を1名選出。
+- **優先順位8 (基本業務 I,O,M,D,R)**: 毎日処理順序をシャッフルし、前日と同じ業務の連続割り当ては「候補除外（ハード制約）」により完全に防ぐ。高スキル未所持者を最優先して基本業務に入れフリーを防ぐ。
         """)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -840,15 +827,14 @@ def page_shift_creation():
     
     df_history_ui = fetch_data("確定勤務表", COLS_SHIFT)
     if not df_history_ui.empty:
-        if "_date_str" not in df_history_ui.columns: df_history_ui["_date_str"] = df_history_ui["日時"].apply(parse_date)
-        for _, row in df_history_ui.iterrows():
-            if pd.isna(row["_date_str"]) or not row["_date_str"]: continue
-            h_date = pd.to_datetime(row["_date_str"])
+        df_history_ui["日時_date"] = pd.to_datetime(df_history_ui["日時"], errors="coerce").dt.date
+        for _, row in df_history_ui.dropna(subset=["日時_date"]).iterrows():
+            h_date = row["日時_date"]
             s_name = str(row["氏名"]).strip()
             t_name = str(row["割り当て業務"]).strip()
             if s_name not in staff_list_summary: continue
             
-            if h_date.date() >= fy_start_ui and (h_date.year < target_year or (h_date.year == target_year and h_date.month <= target_month)):
+            if h_date >= fy_start_ui and (h_date.year < target_year or (h_date.year == target_year and h_date.month <= target_month)):
                 if t_name in ["ＨＭ", "Ｈサ"]: annual_summary[s_name]["心外(HM/Hサ)"] += 1
                 elif t_name == "Ａ": annual_summary[s_name]["A"] += 1
                 elif t_name == "カ": annual_summary[s_name]["カ"] += 1
@@ -890,7 +876,6 @@ def page_shift_creation():
                 staff_angio_dict = {}
                 if "雇用形態" in df_staff.columns:
                     df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.strip()
-                    df_staff["氏名"] = df_staff["氏名"].astype(str).str.strip()
                     part_time_staff = df_staff[df_staff["雇用形態"] == "非常勤"]["氏名"].tolist()
                 
                 if not df_staff.empty:
@@ -899,20 +884,24 @@ def page_shift_creation():
                         staff_ope_dict[sname] = str(row["OPE習熟度"]).strip()
                         staff_angio_dict[sname] = str(row["アンギオ習熟度"]).strip()
                 
+                # 希望データの取得とデータ型の厳密な照合
                 req_unavailable = {}
                 req_night_shift = {}
                 if not df_request.empty:
-                    for _, row in df_request.iterrows():
-                        r_date = parse_date(row["日時"])
-                        if not r_date: continue
-                        kubun = str(row["区分"])
-                        staff_n = str(row["氏名"]).strip()
+                    df_request["日時_date"] = pd.to_datetime(df_request["日時"], errors="coerce").dt.date
+                    df_request["氏名"] = df_request["氏名"].astype(str).str.strip()
+                    for _, row in df_request.dropna(subset=["日時_date"]).iterrows():
+                        r_date = row["日時_date"]
+                        d_str = r_date.strftime("%Y-%m-%d")
+                        kubun = str(row["区分"]).strip()
+                        staff_n = row["氏名"]
+                        
                         if "×" in kubun or "年" in kubun:
-                            if r_date not in req_unavailable: req_unavailable[r_date] = []
-                            req_unavailable[r_date].append(staff_n)
+                            if d_str not in req_unavailable: req_unavailable[d_str] = []
+                            req_unavailable[d_str].append(staff_n)
                         elif "△" in kubun:
-                            if r_date not in req_night_shift: req_night_shift[r_date] = []
-                            req_night_shift[r_date].append(staff_n)
+                            if d_str not in req_night_shift: req_night_shift[d_str] = []
+                            req_night_shift[d_str].append(staff_n)
                                 
                 _, num_days = calendar.monthrange(target_year, target_month)
                 draft_data = []
@@ -927,20 +916,19 @@ def page_shift_creation():
                 
                 df_history = fetch_data("確定勤務表", COLS_SHIFT)
                 if not df_history.empty:
-                    if "_date_str" not in df_history.columns: df_history["_date_str"] = df_history["日時"].apply(parse_date)
-                    for _, row in df_history.iterrows():
-                        if pd.isna(row["_date_str"]) or not row["_date_str"]: continue
-                        h_date = pd.to_datetime(row["_date_str"])
+                    df_history["日時_date"] = pd.to_datetime(df_history["日時"], errors="coerce").dt.date
+                    for _, row in df_history.dropna(subset=["日時_date"]).iterrows():
+                        h_date = row["日時_date"]
                         s_name = str(row["氏名"]).strip()
                         t_name = str(row["割り当て業務"]).strip()
                         if s_name not in staff_list: continue
                         
-                        abs_day = (h_date.date() - datetime.date(2020, 1, 1)).days
+                        abs_day = (h_date - datetime.date(2020, 1, 1)).days
                         if t_name in ["宿直", "日勤"]: staff_night_holiday_abs_days[s_name].add(abs_day)
                             
-                        if h_date.date() >= fy_start and (h_date.year < target_year or (h_date.year == target_year and h_date.month < target_month)):
+                        if h_date >= fy_start and (h_date.year < target_year or (h_date.year == target_year and h_date.month < target_month)):
                             annual_task_counts[s_name][t_name] = annual_task_counts[s_name].get(t_name, 0) + 1
-                            if t_name == "日勤" and is_off_day_func(h_date.date()):
+                            if t_name == "日勤" and is_off_day_func(h_date):
                                 annual_task_counts[s_name]["休日出勤"] = annual_task_counts[s_name].get("休日出勤", 0) + 1
                                 
                         if h_date.year == target_year and h_date.month == target_month and t_name == "Ｄ":
@@ -986,12 +974,12 @@ def page_shift_creation():
                 df_ope = fetch_data("術式予定", COLS_OPE_SCHEDULE)
                 ope_gyomu_dict = {}
                 if not df_ope.empty:
-                    for _, row in df_ope.iterrows():
-                        d_key = parse_date(row["日時"])
-                        if d_key:
-                            gyomu = str(row.get('業務', '')).strip()
-                            if d_key not in ope_gyomu_dict: ope_gyomu_dict[d_key] = []
-                            if gyomu in ["心外", "アブレーション"]: ope_gyomu_dict[d_key].append(gyomu)
+                    df_ope["日時_date"] = pd.to_datetime(df_ope["日時"], errors="coerce").dt.date
+                    for _, row in df_ope.dropna(subset=["日時_date"]).iterrows():
+                        d_key = row["日時_date"].strftime("%Y-%m-%d")
+                        gyomu = str(row.get('業務', '')).strip()
+                        if d_key not in ope_gyomu_dict: ope_gyomu_dict[d_key] = []
+                        if gyomu in ["心外", "アブレーション"]: ope_gyomu_dict[d_key].append(gyomu)
 
                 d_task_assigned_this_month = False
                 yesterday_tasks = {}
@@ -1035,20 +1023,8 @@ def page_shift_creation():
                     assigned_today_staffs = []
                     dummy_counter = 0
                     night_staff = None
-                    
-                    # 2. 非常勤の固定: 非常勤スタッフを「Ｍ」に配置。
-                    if "Ｍ" in required_tasks:
-                        available_part_timers = [s for s in available_staff if s in part_time_staff]
-                        if available_part_timers:
-                            random.shuffle(available_part_timers)
-                            pt_staff = available_part_timers[0]
-                            draft_data.append([d_str, pt_staff, "Ｍ"])
-                            assigned_today_staffs.append(pt_staff)
-                            increment_annual_count(pt_staff, "Ｍ")
-                            available_staff.remove(pt_staff)
-                            required_tasks.remove("Ｍ")
 
-                    # 3. 希望宿直（△）の確定: 「△」を出している人を最優先で宿直（休日は日勤兼宿直）に配置
+                    # 2. 希望宿直（△）の確定: 平日・休日問わず、「△」を出している人を最優先で宿直枠（休日は1名体制枠）に確定させる
                     wishers = [s for s in req_night_shift.get(d_str, []) if s in available_staff and s not in part_time_staff]
                     valid_wishers = [s for s in wishers if can_do_night_or_holiday(s, current_abs_day) and monthly_night_count.get(s, 0) < 4]
                     if is_off_day:
@@ -1077,6 +1053,18 @@ def page_shift_creation():
                             assigned_today_staffs.append(night_staff)
                             if "日勤" in required_tasks:
                                 required_tasks.remove("日勤")
+
+                    # 3. 非常勤の固定: 非常勤スタッフを「Ｍ」に配置。
+                    if "Ｍ" in required_tasks:
+                        available_part_timers = [s for s in available_staff if s in part_time_staff]
+                        if available_part_timers:
+                            random.shuffle(available_part_timers)
+                            pt_staff = available_part_timers[0]
+                            draft_data.append([d_str, pt_staff, "Ｍ"])
+                            assigned_today_staffs.append(pt_staff)
+                            increment_annual_count(pt_staff, "Ｍ")
+                            available_staff.remove(pt_staff)
+                            required_tasks.remove("Ｍ")
 
                     # 4. アブレーション（A）
                     ablation_slots = 2 if is_ablation_day else 0
@@ -1248,14 +1236,16 @@ def page_shift_creation():
                         if row[0] == d_str:
                             s_name = row[1]
                             task_today = row[2]
-                            if task_today != "宿直": yesterday_tasks[s_name] = task_today
+                            if task_today not in ["宿直", "日勤", "フリー"]:
+                                yesterday_tasks[s_name] = task_today
 
                 if draft_data:
                     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
                     month_prefix = f"{target_year}-{target_month:02d}"
                     if not df_shift.empty:
-                        if "_date_str" not in df_shift.columns: df_shift["_date_str"] = df_shift["日時"].apply(parse_date)
-                        df_remain = df_shift[~df_shift["_date_str"].astype(str).str.startswith(month_prefix)].drop(columns=["_date_str"], errors="ignore")
+                        df_shift["_date_obj"] = pd.to_datetime(df_shift["日時"], errors="coerce").dt.date
+                        df_shift["_date_str"] = df_shift["_date_obj"].apply(lambda x: x.strftime("%Y-%m") if pd.notnull(x) else "")
+                        df_remain = df_shift[df_shift["_date_str"] != month_prefix].drop(columns=["_date_obj", "_date_str"], errors="ignore")
                     else: df_remain = pd.DataFrame(columns=COLS_SHIFT)
                         
                     df_new_month = pd.DataFrame(draft_data, columns=COLS_SHIFT)
