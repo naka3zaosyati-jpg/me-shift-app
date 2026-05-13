@@ -920,7 +920,9 @@ def page_shift_creation():
                             
                         if h_date.date() >= fy_start and (h_date.year < target_year or (h_date.year == target_year and h_date.month < target_month)):
                             annual_task_counts[s_name][t_name] = annual_task_counts[s_name].get(t_name, 0) + 1
-                            
+                            if t_name == "日勤" and is_off_day_func(h_date.date()):
+                                annual_task_counts[s_name]["休日出勤"] = annual_task_counts[s_name].get("休日出勤", 0) + 1
+                                
                         if h_date.year == target_year and h_date.month == target_month and t_name == "Ｄ":
                             monthly_d_count[s_name] += 1
 
@@ -1021,7 +1023,23 @@ def page_shift_creation():
                             available_staff.remove(pt_staff)
                             required_tasks.remove("Ｍ")
                     
-                    # 2. 心外枠 (ＨＭ, Ｈサ)
+                    # 2. アブレーション枠 (Ａ)
+                    a_needed = required_tasks.count("Ａ")
+                    for _ in range(a_needed):
+                        required_tasks.remove("Ａ")
+                        candidates = [s for s in available_staff if safe_int(staff_angio_dict.get(s, 0)) >= 3]
+                        if not candidates:
+                            assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
+                            dummy_counter += 1
+                        else:
+                            candidates.sort(key=lambda s: get_annual_count(s, "Ａ"))
+                            assigned_staff = candidates[0]
+                            increment_annual_count(assigned_staff, "Ａ")
+                            available_staff.remove(assigned_staff)
+                            assigned_today_staffs.append(assigned_staff)
+                        draft_data.append([d_str, assigned_staff, "Ａ"])
+
+                    # 3. 心外枠 (ＨＭ, Ｈサ)
                     hm_needed = required_tasks.count("ＨＭ")
                     while hm_needed > 0:
                         required_tasks.remove("ＨＭ")
@@ -1068,22 +1086,6 @@ def page_shift_creation():
                                 available_staff.remove(h_sub)
                                 assigned_today_staffs.append(h_sub)
                                 
-                    # 3. アブレーション枠 (Ａ)
-                    a_needed = required_tasks.count("Ａ")
-                    for _ in range(a_needed):
-                        required_tasks.remove("Ａ")
-                        candidates = [s for s in available_staff if safe_int(staff_angio_dict.get(s, 0)) >= 3]
-                        if not candidates:
-                            assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
-                            dummy_counter += 1
-                        else:
-                            candidates.sort(key=lambda s: get_annual_count(s, "Ａ"))
-                            assigned_staff = candidates[0]
-                            increment_annual_count(assigned_staff, "Ａ")
-                            available_staff.remove(assigned_staff)
-                            assigned_today_staffs.append(assigned_staff)
-                        draft_data.append([d_str, assigned_staff, "Ａ"])
-                        
                     # 4. カテ枠 (カ)
                     c_needed = required_tasks.count("カ")
                     for _ in range(c_needed):
@@ -1126,6 +1128,10 @@ def page_shift_creation():
                             staff_night_holiday_abs_days[night_staff].add(current_abs_day)
                             monthly_night_count[night_staff] += 1
                             
+                    # 高スキル資格者判定（基本業務の優先度用）
+                    def is_high_skill(s):
+                        return staff_ope_dict.get(s, 'A') >= 'C' or safe_int(staff_angio_dict.get(s, 0)) >= 2
+
                     # 6. 基本業務の穴埋め (I, O, M, D, R, 日勤)
                     for task in required_tasks:
                         assigned_staff = None
@@ -1143,7 +1149,10 @@ def page_shift_creation():
                             else:
                                 if is_off_day and task == "日勤":
                                     valid_cands = [s for s in candidates_for_task if monthly_night_count.get(s, 0) < 4 and monthly_holiday_night_count.get(s, 0) < 1]
-                                    if not valid_cands: valid_cands = candidates_for_task
+                                    if not valid_cands:
+                                        valid_cands = [s for s in candidates_for_task if monthly_night_count.get(s, 0) < 4 and monthly_holiday_night_count.get(s, 0) < 2]
+                                    if not valid_cands:
+                                        valid_cands = candidates_for_task
                                     
                                     valid_cands2 = [s for s in valid_cands if can_do_night_or_holiday(s, current_abs_day) and not has_worked_in_block(s, d)]
                                     if not valid_cands2: valid_cands2 = [s for s in valid_cands if not has_worked_in_block(s, d)]
@@ -1155,10 +1164,11 @@ def page_shift_creation():
                                     if wishers:
                                         candidates_for_task = wishers
                                     else:
-                                        # 日勤(休日)はそのまま宿直になるため、宿直の回数を考慮する
-                                        candidates_for_task.sort(key=lambda s: (monthly_night_count.get(s, 0), get_annual_count(s, "宿直")))
+                                        # 年間休日出勤回数と年間宿直回数で均等化
+                                        candidates_for_task.sort(key=lambda s: (monthly_holiday_night_count.get(s, 0), monthly_night_count.get(s, 0), get_annual_count(s, "休日出勤"), get_annual_count(s, "宿直")))
                                 else:
-                                    candidates_for_task.sort(key=lambda s: get_annual_count(s, task))
+                                    # 平日の基本業務：高スキルを持たない人を優先（Falseが先）、その後、累計回数
+                                    candidates_for_task.sort(key=lambda s: (is_high_skill(s), get_annual_count(s, task)))
                                     
                                 assigned_staff = candidates_for_task[0]
                                 increment_annual_count(assigned_staff, task)
@@ -1169,6 +1179,7 @@ def page_shift_creation():
                                     staff_assigned_holiday_days[assigned_staff].add(d)
                                     monthly_night_count[assigned_staff] += 1
                                     monthly_holiday_night_count[assigned_staff] += 1
+                                    increment_annual_count(assigned_staff, "休日出勤")
                                     
                                     # 休日日勤は宿直も兼ねる
                                     increment_annual_count(assigned_staff, "宿直")
