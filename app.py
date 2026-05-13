@@ -236,7 +236,7 @@ def overwrite_data(sheet_name, df, columns):
 COLS_STAFF = ["氏名", "役職", "OPE習熟度", "アンギオ習熟度", "総合コード", "人工心肺メイン回数", "人工心肺サブ回数", "アブレーション回数", "カテ回数", "雇用形態"]
 COLS_REQUEST = ["日時", "氏名", "区分", "コメント"]
 COLS_OPE_MASTER = ["術式名", "術式レベル"]
-COLS_OPE_SCHEDULE = ["日時", "術式"]
+COLS_OPE_SCHEDULE = ["日時", "術式", "業務"]
 COLS_TASK_MASTER = ["略語", "業務名"]
 COLS_SHIFT = ["日時", "氏名", "割り当て業務"]
 COLS_PROFICIENCY_MASTER = ["区分", "ランク", "定義"]
@@ -513,8 +513,9 @@ def page_schedule_task():
             df_ope_master = fetch_data("術式マスタ", COLS_OPE_MASTER)
             ope_names = df_ope_master["術式名"].tolist() if not df_ope_master.empty else ["CABG", "AVR", "PCI", "アブレーション"]
             sched_ope = st.selectbox("術式", ope_names)
+            sched_gyomu = st.selectbox("業務", ["なし", "心外", "アブレーション"])
             if st.form_submit_button("予定追加"):
-                res = append_data("術式予定", [str(sched_date), sched_ope])
+                res = append_data("術式予定", [str(sched_date), sched_ope, sched_gyomu])
                 if res: st.success("スプレッドシートに予定を書き込みました。")
         st.markdown('</div>', unsafe_allow_html=True)
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -726,12 +727,13 @@ def page_shift_creation():
     with st.expander("現在の自動割り当てアルゴリズム（条件）"):
         st.markdown("""
 - **優先割り当て**: 「非常勤」のスタッフは、平日は最優先で「Ｍ（ME業務）」に配置されます。
-- **必要枠の生成**: 平日は基本業務（カ, Ｉ, Ｏ, Ｍ, Ｄ, Ｒ）各1名を配置します。心外枠・アブレーション枠は、下部の曜日設定でチェックが入っている曜日のみ追加生成されます。
-- **宿直（平日）**: 宿直枠は独立させず、その日の日勤者の中からランダムに1名選出され、業務を兼任します。
-- **休日・祝日**: 1名体制とし、その1名が日勤と宿直を兼任します。平日の通常業務は配置しません。
+- **必要枠の生成**: 平日は基本業務（カ, Ｉ, Ｏ, Ｍ, Ｄ, Ｒ）各1名を配置します。曜日別設定の他、「術式予定」の業務項目と連動し、心外枠・アブレーション枠が追加されます。
+- **宿直（平日）**: 宿直枠は独立させず、その日の日勤者の中から選出され兼任します（週1回制限あり）。
+- **休日・祝日**: 1名体制とし、その1名が日勤と宿直を兼任します。平日の通常業務は配置しません（連休中は1回まで）。
 - **特殊条件**: Ｄ（DC確認）業務は月に1回のみ配置されます。
-- **スキル制限（安全管理）**: 心外枠（ＨＭ・Ｈサ）には、スタッフマスタの「OPE習熟度」が A, B, C のいずれかであるスタッフのみが選出されます。
-- **公平性の担保**: 全ての業務において、月内での割り当て回数が最も少ないスタッフを優先的に選出し、同回数の場合はランダムで決定します。
+- **心外枠のスキル制限**: スタッフマスタの「OPE習熟度」が C 以降のスタッフのみ選出。D以降が最低1名含まれます（Cが含まれる場合は3名体制）。
+- **アブレーション枠のスキル制限**: 「アンギオ習熟度」が 3 以降のスタッフのみ選出されます。
+- **公平性の担保**: 全ての業務において、年度ごとの年間実績回数が最も少ないスタッフを優先的に選出し均等化を図ります。
         """)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -792,7 +794,6 @@ def page_shift_creation():
         if st.form_submit_button("1ヶ月分の一括ドラフトを作成"):
             with st.spinner(f"{target_year}年{target_month}月のドラフトを作成中..."):
                 df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
-                # 空白や None, NaN のスタッフを除外（None表示バグ対策）
                 if not df_staff.empty:
                     df_staff = df_staff[df_staff["氏名"].astype(str).str.strip() != ""]
                     df_staff = df_staff[~df_staff["氏名"].astype(str).str.lower().isin(["none", "nan"])]
@@ -803,6 +804,7 @@ def page_shift_creation():
                 
                 part_time_staff = []
                 staff_ope_dict = {}
+                staff_angio_dict = {}
                 if "雇用形態" in df_staff.columns:
                     df_staff["雇用形態"] = df_staff["雇用形態"].astype(str).str.strip()
                     df_staff["氏名"] = df_staff["氏名"].astype(str).str.strip()
@@ -810,9 +812,10 @@ def page_shift_creation():
                 
                 if not df_staff.empty:
                     for _, row in df_staff.iterrows():
-                        staff_ope_dict[str(row["氏名"]).strip()] = str(row["OPE習熟度"]).strip()
+                        sname = str(row["氏名"]).strip()
+                        staff_ope_dict[sname] = str(row["OPE習熟度"]).strip()
+                        staff_angio_dict[sname] = str(row["アンギオ習熟度"]).strip()
                 
-                # 休みの人（×不可、年休希望）と、宿直希望（△）の人を分ける
                 req_unavailable = {}
                 req_night_shift = {}
                 if not df_request.empty:
@@ -832,9 +835,13 @@ def page_shift_creation():
                 _, num_days = calendar.monthrange(target_year, target_month)
                 draft_data = []
                 
-                staff_task_counts = {s: {} for s in staff_list}
-                this_month_holiday_counts = {s: 0 for s in staff_list}
-                staff_last_night_shift = {}
+                # --- 年間を通じた回数均等化の準備 ---
+                fiscal_year = target_year if target_month >= 4 else target_year - 1
+                fy_start = datetime.date(fiscal_year, 4, 1)
+                
+                annual_task_counts = {s: {} for s in staff_list}
+                monthly_d_count = {s: 0 for s in staff_list}
+                staff_night_holiday_abs_days = {s: set() for s in staff_list}
                 
                 df_history = fetch_data("確定勤務表", COLS_SHIFT)
                 if not df_history.empty:
@@ -846,39 +853,79 @@ def page_shift_creation():
                         s_name = str(row["氏名"]).strip()
                         t_name = str(row["割り当て業務"]).strip()
                         
-                        # 過去の割り当て回数をカウント（今月分は洗い替えるため除外）
-                        if h_date.year < target_year or (h_date.year == target_year and h_date.month < target_month):
-                            if s_name in staff_task_counts:
-                                staff_task_counts[s_name][t_name] = staff_task_counts[s_name].get(t_name, 0) + 1
-                                
-                        # 全期間のデータから最新の宿直日（日勤含む）を取得
+                        if s_name not in staff_list: continue
+                        
+                        abs_day = (h_date.date() - datetime.date(2020, 1, 1)).days
+                        
                         if t_name in ["宿直", "日勤"]:
-                            abs_day = (h_date.date() - datetime.date(2020, 1, 1)).days
-                            if s_name not in staff_last_night_shift or abs_day > staff_last_night_shift[s_name]:
-                                staff_last_night_shift[s_name] = abs_day
+                            staff_night_holiday_abs_days[s_name].add(abs_day)
+                            
+                        if h_date.date() >= fy_start and (h_date.year < target_year or (h_date.year == target_year and h_date.month < target_month)):
+                            annual_task_counts[s_name][t_name] = annual_task_counts[s_name].get(t_name, 0) + 1
+                            
+                        if h_date.year == target_year and h_date.month == target_month and t_name == "Ｄ":
+                            monthly_d_count[s_name] += 1
 
-                def can_do_night_shift(staff, current_abs_day, required_interval=6):
-                    last_day = staff_last_night_shift.get(staff, -999)
-                    return (current_abs_day - last_day) >= required_interval
-                                
-                def get_count(staff, task): return staff_task_counts.get(staff, {}).get(task, 0)
-                def increment_count(staff, task):
-                    if staff not in staff_task_counts: staff_task_counts[staff] = {}
-                    staff_task_counts[staff][task] = staff_task_counts[staff].get(task, 0) + 1
-                
-                d_task_assigned = False
+                def get_annual_count(staff, task):
+                    if task == "心外": return annual_task_counts.get(staff, {}).get("ＨＭ", 0) + annual_task_counts.get(staff, {}).get("Ｈサ", 0)
+                    return annual_task_counts.get(staff, {}).get(task, 0)
+                def increment_annual_count(staff, task):
+                    if staff not in annual_task_counts: annual_task_counts[staff] = {}
+                    annual_task_counts[staff][task] = annual_task_counts[staff].get(task, 0) + 1
+                    
+                def can_do_night_or_holiday(staff, current_abs_day):
+                    for d in staff_night_holiday_abs_days[staff]:
+                        if abs(d - current_abs_day) <= 3: return False
+                    return True
+                    
+                def is_off_day_func(dt):
+                    return dt.weekday() >= 5 or jpholiday.is_holiday(dt) or (dt.month == 12 and dt.day >= 29) or (dt.month == 1 and dt.day <= 3)
+
+                holiday_block_map = {}
+                current_block = []
+                for d in range(1, num_days + 1):
+                    dt = datetime.date(target_year, target_month, d)
+                    if is_off_day_func(dt):
+                        current_block.append(d)
+                    else:
+                        if current_block:
+                            for day in current_block: holiday_block_map[day] = current_block
+                            current_block = []
+                if current_block:
+                    for day in current_block: holiday_block_map[day] = current_block
+                    
+                staff_assigned_holiday_days = {s: set() for s in staff_list}
+                def has_worked_in_block(staff, day):
+                    block = holiday_block_map.get(day, [])
+                    for b_day in block:
+                        if b_day in staff_assigned_holiday_days[staff]: return True
+                    return False
+
+                df_ope = fetch_data("術式予定", COLS_OPE_SCHEDULE)
+                ope_gyomu_dict = {}
+                if not df_ope.empty:
+                    for _, row in df_ope.iterrows():
+                        d_key = parse_date(row["日時"])
+                        if d_key:
+                            gyomu = str(row.get('業務', '')).strip()
+                            if d_key not in ope_gyomu_dict: ope_gyomu_dict[d_key] = []
+                            if gyomu in ["心外", "アブレーション"]:
+                                ope_gyomu_dict[d_key].append(gyomu)
+
+                d_task_assigned_this_month = False
                 
                 for d in range(1, num_days + 1):
                     dt = datetime.date(target_year, target_month, d)
                     d_str = dt.strftime("%Y-%m-%d")
                     current_abs_day = (dt - datetime.date(2020, 1, 1)).days
                     
-                    is_weekend = dt.weekday() >= 5
-                    is_holiday = jpholiday.is_holiday(dt)
-                    is_new_year = (dt.month == 12 and dt.day >= 29) or (dt.month == 1 and dt.day <= 3)
-                    is_off_day = is_weekend or is_holiday or is_new_year
+                    is_off_day = is_off_day_func(dt)
                     
                     required_tasks = []
+                    opes_gyomu = ope_gyomu_dict.get(d_str, [])
+                    heart_count = opes_gyomu.count("心外")
+                    ablation_count = opes_gyomu.count("アブレーション")
+                    
                     if is_off_day:
                         required_tasks = ["日勤"]
                     else:
@@ -886,25 +933,24 @@ def page_shift_creation():
                         week_cols = ["月", "火", "水", "木", "金"]
                         if 0 <= dt.weekday() <= 4:
                             day_str = week_cols[dt.weekday()]
-                            if default_settings["心外"][day_str]:
-                                required_tasks.extend(["ＨＭ", "Ｈサ"])
-                            if default_settings["アブレーション"][day_str]:
-                                required_tasks.extend(["Ａ", "Ａ"])
-                            
-                    if d_task_assigned and "Ｄ" in required_tasks:
+                            if default_settings["心外"][day_str]: heart_count += 1
+                            if default_settings["アブレーション"][day_str]: ablation_count += 1
+                    
+                    for _ in range(heart_count): required_tasks.extend(["ＨＭ", "Ｈサ"])
+                    for _ in range(ablation_count): required_tasks.extend(["Ａ", "Ａ"])
+                        
+                    if d_task_assigned_this_month and "Ｄ" in required_tasks:
                         required_tasks.remove("Ｄ")
                             
                     unavailable = req_unavailable.get(d_str, [])
                     available_staff = [s for s in staff_list if s not in unavailable]
                     
-                    # 休日・祝日の場合、非常勤スタッフは日勤の対象外とするためリストから除外
                     if is_off_day:
                         available_staff = [s for s in available_staff if s not in part_time_staff]
                         
                     assigned_today_staffs = []
                     dummy_counter = 0
                     
-                    # 1. 非常勤スタッフの優先割当
                     if "Ｍ" in required_tasks:
                         available_part_timers = [s for s in available_staff if s in part_time_staff]
                         if available_part_timers:
@@ -912,103 +958,137 @@ def page_shift_creation():
                             pt_staff = available_part_timers[0]
                             draft_data.append([d_str, pt_staff, "Ｍ"])
                             assigned_today_staffs.append(pt_staff)
-                            increment_count(pt_staff, "Ｍ")
+                            increment_annual_count(pt_staff, "Ｍ")
                             available_staff.remove(pt_staff)
                             required_tasks.remove("Ｍ")
                     
-                    # 2. その他の通常業務
+                    hm_needed = required_tasks.count("ＨＭ")
+                    while hm_needed > 0:
+                        required_tasks.remove("ＨＭ")
+                        if "Ｈサ" in required_tasks: required_tasks.remove("Ｈサ")
+                        hm_needed -= 1
+                        
+                        cands = [s for s in available_staff if staff_ope_dict.get(s, 'A') >= 'C']
+                        cands.sort(key=lambda s: get_annual_count(s, "心外"))
+                        
+                        picked = []
+                        d_cands = [s for s in cands if staff_ope_dict.get(s, 'A') >= 'D']
+                        if d_cands:
+                            first = d_cands[0]
+                            picked.append(first)
+                            cands.remove(first)
+                        else:
+                            if cands:
+                                first = cands[0]
+                                picked.append(first)
+                                cands.remove(first)
+                                
+                        if cands:
+                            second = cands[0]
+                            picked.append(second)
+                            cands.remove(second)
+                            
+                        has_c = any(staff_ope_dict.get(s, 'A') == 'C' for s in picked)
+                        if has_c and cands:
+                            third = cands[0]
+                            picked.append(third)
+                            cands.remove(third)
+                            
+                        if picked:
+                            picked.sort(key=lambda s: staff_ope_dict.get(s, 'A'), reverse=True)
+                            hm_staff = picked[0]
+                            draft_data.append([d_str, hm_staff, "ＨＭ"])
+                            increment_annual_count(hm_staff, "ＨＭ")
+                            available_staff.remove(hm_staff)
+                            assigned_today_staffs.append(hm_staff)
+                            
+                            for h_sub in picked[1:]:
+                                draft_data.append([d_str, h_sub, "Ｈサ"])
+                                increment_annual_count(h_sub, "Ｈサ")
+                                available_staff.remove(h_sub)
+                                assigned_today_staffs.append(h_sub)
+                                
                     for task in required_tasks:
                         assigned_staff = None
                         if available_staff:
                             candidates_for_task = available_staff.copy()
                             
-                            # 【追加ロジック】ＨＭ・Ｈサは OPE習熟度 A, B, C のみに限定
-                            if task in ["ＨＭ", "Ｈサ"]:
-                                valid_hm_candidates = [s for s in candidates_for_task if staff_ope_dict.get(s, "") in ["A", "B", "C"]]
-                                # 該当者がいれば候補を絞り込む。誰もいなければ緩和（元のまま）
-                                if valid_hm_candidates:
-                                    candidates_for_task = valid_hm_candidates
+                            if task == "Ａ":
+                                valid_a = [s for s in candidates_for_task if safe_int(staff_angio_dict.get(s, 0)) >= 3]
+                                if valid_a: candidates_for_task = valid_a
+                                
+                            if task == "Ｄ":
+                                valid_d = [s for s in candidates_for_task if monthly_d_count.get(s, 0) == 0]
+                                if valid_d: candidates_for_task = valid_d
                             
-                            # 休日（is_off_day）の「日勤」を決める場合
                             if is_off_day and task == "日勤":
-                                # 宿直ルールを満たす者のみに絞る（6日間隔）
-                                valid_candidates = [s for s in candidates_for_task if can_do_night_shift(s, current_abs_day, 6)]
+                                valid_candidates = [s for s in candidates_for_task if can_do_night_or_holiday(s, current_abs_day) and not has_worked_in_block(s, d)]
                                 if not valid_candidates:
-                                    # いなければ連続不可（2日間隔）まで緩和
-                                    valid_candidates = [s for s in candidates_for_task if can_do_night_shift(s, current_abs_day, 2)]
-                                if valid_candidates:
-                                    candidates_for_task = valid_candidates
+                                    valid_candidates = [s for s in candidates_for_task if not has_worked_in_block(s, d)]
+                                if not valid_candidates:
+                                    valid_candidates = candidates_for_task
                                     
-                                # 宿直希望者(△)がいれば最優先
+                                candidates_for_task = valid_candidates
+                                    
                                 wishers = [s for s in req_night_shift.get(d_str, []) if s in candidates_for_task]
                                 if wishers:
                                     candidates_for_task = wishers
                                 else:
-                                    # 希望がいなければ、「今月の休日出勤回数（1人1回徹底）」と「これまでの総回数」でソート
-                                    candidates_for_task.sort(key=lambda s: (this_month_holiday_counts.get(s, 0), get_count(s, task)))
+                                    candidates_for_task.sort(key=lambda s: get_annual_count(s, task))
                             else:
-                                candidates_for_task.sort(key=lambda s: get_count(s, task))
+                                candidates_for_task.sort(key=lambda s: get_annual_count(s, task))
                                 
                             assigned_staff = candidates_for_task[0]
-                            
-                            increment_count(assigned_staff, task)
+                            increment_annual_count(assigned_staff, task)
                             available_staff.remove(assigned_staff)
                             
                             if is_off_day and task == "日勤":
-                                this_month_holiday_counts[assigned_staff] += 1
-                                staff_last_night_shift[assigned_staff] = current_abs_day
+                                staff_night_holiday_abs_days[assigned_staff].add(current_abs_day)
+                                staff_assigned_holiday_days[assigned_staff].add(d)
                                 
-                            if task == "Ｄ": d_task_assigned = True
+                            if task == "Ｄ":
+                                d_task_assigned_this_month = True
+                                monthly_d_count[assigned_staff] += 1
                         else:
                             assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
                             dummy_counter += 1
-                            if task == "Ｄ": d_task_assigned = True
+                            if task == "Ｄ": d_task_assigned_this_month = True
                             
                         draft_data.append([d_str, assigned_staff, task])
                         assigned_today_staffs.append(assigned_staff)
-                        
-                    # 3. 宿直
-                    # 今日の全候補者（日勤割り当て済み＋余っている人）から非常勤を除外して取得
+
                     night_candidates_all = [s for s in (assigned_today_staffs + available_staff) if s in staff_list and s not in part_time_staff]
-                    night_candidates_all = list(dict.fromkeys(night_candidates_all)) # 重複排除
+                    night_candidates_all = list(dict.fromkeys(night_candidates_all))
                     
-                    # 宿直ルール（6日間隔）を満たす者をフィルタ
-                    valid_night_candidates = [s for s in night_candidates_all if can_do_night_shift(s, current_abs_day, 6)]
+                    valid_night_candidates = [s for s in night_candidates_all if can_do_night_or_holiday(s, current_abs_day)]
                     if not valid_night_candidates:
-                        valid_night_candidates = [s for s in night_candidates_all if can_do_night_shift(s, current_abs_day, 2)]
-                    if not valid_night_candidates:
-                        valid_night_candidates = night_candidates_all # 最終フォールバック
+                        valid_night_candidates = night_candidates_all
                         
                     night_staff = None
                     night_wishers = [s for s in req_night_shift.get(d_str, []) if s in valid_night_candidates]
                     
-                    # ① 宿直希望者がいれば最優先
                     if night_wishers:
                         night_staff = night_wishers[0]
                     else:
-                        # ② いなければ、今日の日勤業務（通常業務）を割り当てられた人の中から選出
                         real_assigned = [s for s in assigned_today_staffs if s in valid_night_candidates]
                         if real_assigned:
                             random.shuffle(real_assigned)
-                            real_assigned.sort(key=lambda s: get_count(s, "宿直"))
+                            real_assigned.sort(key=lambda s: get_annual_count(s, "宿直"))
                             night_staff = real_assigned[0]
                         elif valid_night_candidates:
-                            # 万が一、誰も日勤にいない場合は全候補から
                             random.shuffle(valid_night_candidates)
-                            valid_night_candidates.sort(key=lambda s: get_count(s, "宿直"))
+                            valid_night_candidates.sort(key=lambda s: get_annual_count(s, "宿直"))
                             night_staff = valid_night_candidates[0]
                             
                     if night_staff:
-                        increment_count(night_staff, "宿直")
+                        increment_annual_count(night_staff, "宿直")
                         draft_data.append([d_str, night_staff, "宿直"])
-                        staff_last_night_shift[night_staff] = current_abs_day
+                        staff_night_holiday_abs_days[night_staff].add(current_abs_day)
                         
-                    # 4. 余剰スタッフの割り当て（「フリー」枠）
-                    # 平日のみ、どの業務にも割り当てられなかったスタッフをフリーとする
                     if not is_off_day:
                         for leftover_staff in available_staff:
                             draft_data.append([d_str, leftover_staff, "フリー"])
-                            increment_count(leftover_staff, "フリー")
+                            increment_annual_count(leftover_staff, "フリー")
                         
                 if draft_data:
                     df_shift = fetch_data("確定勤務表", COLS_SHIFT)
