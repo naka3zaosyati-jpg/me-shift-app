@@ -1130,6 +1130,7 @@ def page_shift_creation():
                         return staff_ope_dict.get(s, 'A') >= 'C' or safe_int(staff_angio_dict.get(s, 0)) >= 2
 
                     # 6. 基本業務の穴埋め (I, O, M, D, R, 日勤)
+                    random.shuffle(required_tasks)
                     for task in required_tasks:
                         assigned_staff = None
                         if available_staff:
@@ -1164,12 +1165,17 @@ def page_shift_creation():
                                         # 年間休日出勤回数と年間宿直回数で均等化
                                         candidates_for_task.sort(key=lambda s: (monthly_holiday_night_count.get(s, 0), get_annual_count(s, "休日出勤"), get_annual_count(s, "宿直")))
                                 else:
-                                    # 平日の基本業務：高スキルを持たない人を優先（Falseが先）、同一業務連続回避、その後、累計回数
-                                    candidates_for_task.sort(key=lambda s: (
+                                    # 平日の基本業務：同一業務連続回避（ハード制約）
+                                    filtered_cands = [s for s in candidates_for_task if yesterday_tasks.get(s) != task]
+                                    if not filtered_cands:
+                                        filtered_cands = candidates_for_task  # 除外すると誰もいなくなる場合は例外的に許可
+                                        
+                                    # 高スキルを持たない人を優先（Falseが先）、累計回数で均等化
+                                    filtered_cands.sort(key=lambda s: (
                                         is_high_skill(s), 
-                                        1 if yesterday_tasks.get(s) == task else 0, 
                                         get_annual_count(s, task)
                                     ))
+                                    candidates_for_task = filtered_cands
                                     
                                 assigned_staff = candidates_for_task[0]
                                 increment_annual_count(assigned_staff, task)
