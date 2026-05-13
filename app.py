@@ -892,16 +892,15 @@ def page_shift_creation():
                     df_request["氏名"] = df_request["氏名"].astype(str).str.strip()
                     for _, row in df_request.dropna(subset=["日時_date"]).iterrows():
                         r_date = row["日時_date"]
-                        d_str = r_date.strftime("%Y-%m-%d")
                         kubun = str(row["区分"]).strip()
                         staff_n = row["氏名"]
                         
                         if "×" in kubun or "年" in kubun:
-                            if d_str not in req_unavailable: req_unavailable[d_str] = []
-                            req_unavailable[d_str].append(staff_n)
+                            if r_date not in req_unavailable: req_unavailable[r_date] = []
+                            req_unavailable[r_date].append(staff_n)
                         elif "△" in kubun:
-                            if d_str not in req_night_shift: req_night_shift[d_str] = []
-                            req_night_shift[d_str].append(staff_n)
+                            if r_date not in req_night_shift: req_night_shift[r_date] = []
+                            req_night_shift[r_date].append(staff_n)
                                 
                 _, num_days = calendar.monthrange(target_year, target_month)
                 draft_data = []
@@ -1015,7 +1014,7 @@ def page_shift_creation():
                         required_tasks.remove("Ｄ")
                             
                     # 1. 休みの除外: 「×」「年」のスタッフを候補から一番最初に完全除外
-                    unavailable = req_unavailable.get(d_str, [])
+                    unavailable = req_unavailable.get(dt, [])
                     available_staff = [s for s in staff_list if s not in unavailable]
                     if is_off_day:
                         available_staff = [s for s in available_staff if s not in part_time_staff]
@@ -1025,10 +1024,9 @@ def page_shift_creation():
                     night_staff = None
 
                     # 2. 希望宿直（△）の確定: 平日・休日問わず、「△」を出している人を最優先で宿直枠（休日は1名体制枠）に確定させる
-                    wishers = [s for s in req_night_shift.get(d_str, []) if s in available_staff and s not in part_time_staff]
-                    valid_wishers = [s for s in wishers if can_do_night_or_holiday(s, current_abs_day) and monthly_night_count.get(s, 0) < 4]
-                    if is_off_day:
-                        valid_wishers = [s for s in valid_wishers if monthly_holiday_night_count.get(s, 0) < 2 and not has_worked_in_block(s, d)]
+                    wishers = [s for s in req_night_shift.get(dt, []) if s in available_staff and s not in part_time_staff]
+                    # ★修正：回数上限ルール（月4回、休日月1回、連休1回など）を無視して絶対優先。前後3日間の間隔ルールのみ適用。
+                    valid_wishers = [s for s in wishers if can_do_night_or_holiday(s, current_abs_day)]
                         
                     if valid_wishers:
                         if is_off_day:
