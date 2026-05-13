@@ -785,12 +785,70 @@ def page_shift_creation():
     st.write("### 機能A：1ヶ月一括ドラフト作成（ベース作り）")
     st.info("指定した月の1日〜月末までのシフトを自動生成し、スプレッドシートに保存します。\n※既に該当月のデータがある場合は、対象月のデータがすべて「洗い替え（上書き）」されます。")
     
-    with st.form("bulk_draft_form"):
-        col1, col2 = st.columns(2)
-        today = datetime.date.today()
-        with col1: target_year = st.number_input("対象年", min_value=2020, max_value=2050, value=today.year, step=1)
-        with col2: target_month = st.number_input("対象月", min_value=1, max_value=12, value=today.month, step=1)
+    col1, col2 = st.columns(2)
+    today = datetime.date.today()
+    with col1: target_year = st.number_input("対象年", min_value=2020, max_value=2050, value=today.year, step=1)
+    with col2: target_month = st.number_input("対象月", min_value=1, max_value=12, value=today.month, step=1)
+    
+    def is_off_day_func(dt):
+        return dt.weekday() >= 5 or jpholiday.is_holiday(dt) or (dt.month == 12 and dt.day >= 29) or (dt.month == 1 and dt.day <= 3)
+
+    # --- UI表示用の年間・月間集計表 ---
+    df_staff_ui = fetch_data("スタッフマスタ", COLS_STAFF)
+    staff_list_summary = []
+    if not df_staff_ui.empty:
+        df_staff_clean = df_staff_ui[df_staff_ui["氏名"].astype(str).str.strip() != ""]
+        staff_list_summary = df_staff_clean[~df_staff_clean["氏名"].astype(str).str.lower().isin(["none", "nan"])]["氏名"].astype(str).str.strip().tolist()
+
+    fiscal_year_ui = target_year if target_month >= 4 else target_year - 1
+    fy_start_ui = datetime.date(fiscal_year_ui, 4, 1)
+    
+    annual_summary = {s: {"心外(HM/Hサ)": 0, "A": 0, "カ": 0, "I": 0, "O": 0, "M": 0, "D": 0, "R": 0, "宿直": 0} for s in staff_list_summary}
+    monthly_summary = {s: {"当月宿直(合計)": 0, "当月休日出勤": 0} for s in staff_list_summary}
+    
+    df_history_ui = fetch_data("確定勤務表", COLS_SHIFT)
+    if not df_history_ui.empty:
+        if "_date_str" not in df_history_ui.columns:
+            df_history_ui["_date_str"] = df_history_ui["日時"].apply(parse_date)
             
+        for _, row in df_history_ui.iterrows():
+            if pd.isna(row["_date_str"]) or not row["_date_str"]: continue
+            h_date = pd.to_datetime(row["_date_str"])
+            s_name = str(row["氏名"]).strip()
+            t_name = str(row["割り当て業務"]).strip()
+            
+            if s_name not in staff_list_summary: continue
+            
+            # Annual (include target_month for UI reflection after draft)
+            if h_date.date() >= fy_start_ui and (h_date.year < target_year or (h_date.year == target_year and h_date.month <= target_month)):
+                if t_name in ["ＨＭ", "Ｈサ"]: annual_summary[s_name]["心外(HM/Hサ)"] += 1
+                elif t_name == "Ａ": annual_summary[s_name]["A"] += 1
+                elif t_name == "カ": annual_summary[s_name]["カ"] += 1
+                elif t_name == "Ｉ": annual_summary[s_name]["I"] += 1
+                elif t_name == "Ｏ": annual_summary[s_name]["O"] += 1
+                elif t_name == "Ｍ": annual_summary[s_name]["M"] += 1
+                elif t_name == "Ｄ": annual_summary[s_name]["D"] += 1
+                elif t_name == "Ｒ": annual_summary[s_name]["R"] += 1
+                elif t_name == "宿直": annual_summary[s_name]["宿直"] += 1
+                
+            # Monthly
+            if h_date.year == target_year and h_date.month == target_month:
+                if t_name == "宿直": monthly_summary[s_name]["当月宿直(合計)"] += 1
+                if t_name == "日勤" and is_off_day_func(h_date):
+                    monthly_summary[s_name]["当月休日出勤"] += 1
+
+    if staff_list_summary:
+        summary_data = []
+        for s in staff_list_summary:
+            row = {"氏名": s}
+            row.update(annual_summary[s])
+            row.update(monthly_summary[s])
+            summary_data.append(row)
+            
+        st.write(f"#### 📊 {fiscal_year_ui}年度 累計実績 ＆ {target_year}年{target_month}月 実績サマリー")
+        st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+
+    with st.form("bulk_draft_form"):
         if st.form_submit_button("1ヶ月分の一括ドラフトを作成"):
             with st.spinner(f"{target_year}年{target_month}月のドラフトを作成中..."):
                 df_staff = fetch_data("スタッフマスタ", COLS_STAFF)
@@ -866,6 +924,9 @@ def page_shift_creation():
                         if h_date.year == target_year and h_date.month == target_month and t_name == "Ｄ":
                             monthly_d_count[s_name] += 1
 
+                monthly_night_count = {s: 0 for s in staff_list}
+                monthly_holiday_night_count = {s: 0 for s in staff_list}
+
                 def get_annual_count(staff, task):
                     if task == "心外": return annual_task_counts.get(staff, {}).get("ＨＭ", 0) + annual_task_counts.get(staff, {}).get("Ｈサ", 0)
                     return annual_task_counts.get(staff, {}).get(task, 0)
@@ -877,9 +938,6 @@ def page_shift_creation():
                     for d in staff_night_holiday_abs_days[staff]:
                         if abs(d - current_abs_day) <= 3: return False
                     return True
-                    
-                def is_off_day_func(dt):
-                    return dt.weekday() >= 5 or jpholiday.is_holiday(dt) or (dt.month == 12 and dt.day >= 29) or (dt.month == 1 and dt.day <= 3)
 
                 holiday_block_map = {}
                 current_block = []
