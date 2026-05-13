@@ -1072,76 +1072,95 @@ def page_shift_creation():
                             candidates_for_task = available_staff.copy()
                             
                             if task == "Ａ":
-                                valid_a = [s for s in candidates_for_task if safe_int(staff_angio_dict.get(s, 0)) >= 3]
-                                if valid_a: candidates_for_task = valid_a
+                                candidates_for_task = [s for s in candidates_for_task if safe_int(staff_angio_dict.get(s, 0)) >= 3]
                                 
                             if task == "Ｄ":
                                 valid_d = [s for s in candidates_for_task if monthly_d_count.get(s, 0) == 0]
                                 if valid_d: candidates_for_task = valid_d
                             
-                            if is_off_day and task == "日勤":
-                                valid_candidates = [s for s in candidates_for_task if can_do_night_or_holiday(s, current_abs_day) and not has_worked_in_block(s, d)]
-                                if not valid_candidates:
-                                    valid_candidates = [s for s in candidates_for_task if not has_worked_in_block(s, d)]
-                                if not valid_candidates:
-                                    valid_candidates = candidates_for_task
+                            if not candidates_for_task:
+                                assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
+                                dummy_counter += 1
+                                if task == "Ｄ": d_task_assigned_this_month = True
+                            else:
+                                if is_off_day and task == "日勤":
+                                    valid_cands = [s for s in candidates_for_task if monthly_night_count.get(s, 0) < 4 and monthly_holiday_night_count.get(s, 0) < 1]
+                                    if not valid_cands: valid_cands = candidates_for_task
                                     
-                                candidates_for_task = valid_candidates
-                                    
-                                wishers = [s for s in req_night_shift.get(d_str, []) if s in candidates_for_task]
-                                if wishers:
-                                    candidates_for_task = wishers
+                                    valid_cands2 = [s for s in valid_cands if can_do_night_or_holiday(s, current_abs_day) and not has_worked_in_block(s, d)]
+                                    if not valid_cands2: valid_cands2 = [s for s in valid_cands if not has_worked_in_block(s, d)]
+                                    if not valid_cands2: valid_cands2 = valid_cands
+                                        
+                                    candidates_for_task = valid_cands2
+                                        
+                                    wishers = [s for s in req_night_shift.get(d_str, []) if s in candidates_for_task]
+                                    if wishers:
+                                        candidates_for_task = wishers
+                                    else:
+                                        candidates_for_task.sort(key=lambda s: get_annual_count(s, task))
                                 else:
                                     candidates_for_task.sort(key=lambda s: get_annual_count(s, task))
-                            else:
-                                candidates_for_task.sort(key=lambda s: get_annual_count(s, task))
+                                    
+                                assigned_staff = candidates_for_task[0]
+                                increment_annual_count(assigned_staff, task)
+                                available_staff.remove(assigned_staff)
                                 
-                            assigned_staff = candidates_for_task[0]
-                            increment_annual_count(assigned_staff, task)
-                            available_staff.remove(assigned_staff)
-                            
-                            if is_off_day and task == "日勤":
-                                staff_night_holiday_abs_days[assigned_staff].add(current_abs_day)
-                                staff_assigned_holiday_days[assigned_staff].add(d)
-                                
-                            if task == "Ｄ":
-                                d_task_assigned_this_month = True
-                                monthly_d_count[assigned_staff] += 1
+                                if is_off_day and task == "日勤":
+                                    staff_night_holiday_abs_days[assigned_staff].add(current_abs_day)
+                                    staff_assigned_holiday_days[assigned_staff].add(d)
+                                    monthly_night_count[assigned_staff] += 1
+                                    monthly_holiday_night_count[assigned_staff] += 1
+                                    
+                                if task == "Ｄ":
+                                    d_task_assigned_this_month = True
+                                    monthly_d_count[assigned_staff] += 1
                         else:
                             assigned_staff = f"スタッフ{chr(65 + dummy_counter)}"
                             dummy_counter += 1
                             if task == "Ｄ": d_task_assigned_this_month = True
                             
                         draft_data.append([d_str, assigned_staff, task])
-                        assigned_today_staffs.append(assigned_staff)
+                        if assigned_staff in staff_list:
+                            assigned_today_staffs.append(assigned_staff)
 
                     night_candidates_all = [s for s in (assigned_today_staffs + available_staff) if s in staff_list and s not in part_time_staff]
                     night_candidates_all = list(dict.fromkeys(night_candidates_all))
                     
-                    valid_night_candidates = [s for s in night_candidates_all if can_do_night_or_holiday(s, current_abs_day)]
-                    if not valid_night_candidates:
-                        valid_night_candidates = night_candidates_all
-                        
                     night_staff = None
-                    night_wishers = [s for s in req_night_shift.get(d_str, []) if s in valid_night_candidates]
-                    
-                    if night_wishers:
-                        night_staff = night_wishers[0]
+                    if is_off_day:
+                        # 休日は1名体制、日勤者がそのまま宿直兼任
+                        for (dd, s, t) in draft_data:
+                            if dd == d_str and t == "日勤" and s in staff_list:
+                                night_staff = s
+                                break
                     else:
-                        real_assigned = [s for s in assigned_today_staffs if s in valid_night_candidates]
-                        if real_assigned:
-                            random.shuffle(real_assigned)
-                            real_assigned.sort(key=lambda s: get_annual_count(s, "宿直"))
-                            night_staff = real_assigned[0]
-                        elif valid_night_candidates:
-                            random.shuffle(valid_night_candidates)
-                            valid_night_candidates.sort(key=lambda s: get_annual_count(s, "宿直"))
-                            night_staff = valid_night_candidates[0]
+                        valid_night_candidates = [s for s in night_candidates_all if can_do_night_or_holiday(s, current_abs_day) and monthly_night_count.get(s, 0) < 4]
+                        if not valid_night_candidates:
+                            valid_night_candidates = [s for s in night_candidates_all if monthly_night_count.get(s, 0) < 4]
+                        if not valid_night_candidates:
+                            valid_night_candidates = night_candidates_all
+                            
+                        night_wishers = [s for s in req_night_shift.get(d_str, []) if s in valid_night_candidates]
+                        
+                        if night_wishers:
+                            night_staff = night_wishers[0]
+                        else:
+                            real_assigned = [s for s in assigned_today_staffs if s in valid_night_candidates]
+                            if real_assigned:
+                                random.shuffle(real_assigned)
+                                real_assigned.sort(key=lambda s: get_annual_count(s, "宿直"))
+                                night_staff = real_assigned[0]
+                            elif valid_night_candidates:
+                                random.shuffle(valid_night_candidates)
+                                valid_night_candidates.sort(key=lambda s: get_annual_count(s, "宿直"))
+                                night_staff = valid_night_candidates[0]
                             
                     if night_staff:
                         increment_annual_count(night_staff, "宿直")
                         draft_data.append([d_str, night_staff, "宿直"])
                         staff_night_holiday_abs_days[night_staff].add(current_abs_day)
+                        if not is_off_day:
+                            monthly_night_count[night_staff] += 1
                         
                     if not is_off_day:
                         for leftover_staff in available_staff:
